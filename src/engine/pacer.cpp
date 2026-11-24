@@ -1,5 +1,5 @@
 // Copyright (c) 2026 CR1M (https://cr1m.net | support@cr1m.net)
-// Licensed under CR1M Source-Available License v1.0 (see LICENSE).
+// Licensed under CR1M Source Available License v1.0 (see LICENSE).
 // Redistribution of compiled binaries or modified forks is strictly prohibited.
 
 #include "cr1m/pacer.hpp"
@@ -14,7 +14,7 @@ std::vector<uint8_t> BuildX64Cave(uint32_t targetFps, uint64_t ticksPerFrame,
     if (magic == 0) return {};
 
     CaveBuilder c(384);
-    // 0x60-byte header shared with x86 ("CRM5")
+    // 0x60 byte header shared with x86 ("CRM5")
     c.u32(magic); c.u32(targetFps);                 // +0x00, +0x04
     c.u64(ticksPerFrame); c.u64(0);                 // +0x08 ticksPerFrame, +0x10 reserved
     c.u64(0);                                       // +0x18 lastTick
@@ -36,7 +36,7 @@ std::vector<uint8_t> BuildX64Cave(uint32_t targetFps, uint64_t ticksPerFrame,
     c.bytes({0x48, 0x8D, 0x4C, 0x24, 0x20, 0x48, 0x8B, 0x05}); c.rip32(0x20);
     c.bytes({0xFF, 0x10, 0x48, 0x8B, 0x44, 0x24, 0x20});
 
-    // Trial anti-kill watchdog lease check at +0x50 (0 = licensed unlimited)
+    // Trial watchdog lease check at +0x50 (0 = licensed unlimited)
     c.bytes({0x48, 0x8B, 0x0D}); c.rip32(0x50);     // mov rcx, [trialLeaseQpc]
     c.bytes({0x48, 0x85, 0xC9});                    // test rcx, rcx
     size_t jz_lease_ok = c.jcc32(0x84);
@@ -62,7 +62,7 @@ std::vector<uint8_t> BuildX64Cave(uint32_t targetFps, uint64_t ticksPerFrame,
     c.bytes({0x48, 0x39, 0xF8});                    // cmp rax, rdi
     size_t jb_spin = c.jcc32(0x82);
 
-    // Always anchor lastTick = now (prevents catch-up frames < 6.49ms colliding with V-Sync)
+    // Always anchor lastTick = now (prevents catchup frames < 6.49ms colliding with VSync)
     size_t store_now = c.pos();
     c.bytes({0x48, 0x89, 0x05}); c.rip32(0x18);     // mov [lastTick], rax
 
@@ -118,7 +118,7 @@ std::vector<uint8_t> BuildX86Cave(uint32_t caveBase32, uint32_t targetFps, uint6
     c.bytes({0x8D, 0x04, 0x24, 0x50, 0xA1}); c.u32(aQpcPtr); c.bytes({0xFF, 0x10});
     c.bytes({0x8B, 0x44, 0x24, 0x00, 0x8B, 0x54, 0x24, 0x04});
 
-    // Trial anti-kill watchdog lease check at +0x50 (0 = licensed unlimited)
+    // Trial watchdog lease check at +0x50 (0 = licensed unlimited)
     c.bytes({0x8B, 0x0D}); c.u32(aLeaseLo);
     c.bytes({0x8B, 0x1D}); c.u32(aLeaseHi);
     c.bytes({0x89, 0xCE, 0x09, 0xDE});

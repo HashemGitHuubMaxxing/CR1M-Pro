@@ -1,5 +1,5 @@
 // Copyright (c) 2026 CR1M (https://cr1m.net | support@cr1m.net)
-// Licensed under CR1M Source-Available License v1.0 (see LICENSE).
+// Licensed under CR1M Source Available License v1.0 (see LICENSE).
 // Redistribution of compiled binaries or modified forks is strictly prohibited.
 
 #include "cr1m/patcher.hpp"
@@ -224,7 +224,7 @@ bool ApplyPatchesX86(HANDLE hp, uintptr_t base, const std::vector<uint8_t>& txt,
         return false;
     }
 
-    // Extract fpsLimit VA (ASLR-safe) before patching GetFps / SetFps
+    // Extract fpsLimit VA (ASLR safe) before patching GetFps / SetFps
     uint32_t fpsLimRva = 0;
     {
         uint8_t b[13]{};
@@ -332,7 +332,7 @@ bool ApplyPatchesX86(HANDLE hp, uintptr_t base, const std::vector<uint8_t>& txt,
         failCount += 2;
     }
 
-    // Deploy 32-bit Pacer + SwitchT Trampoline
+    // Deploy 32 bit Pacer + SwitchT Trampoline
     if (iat.pQpcRva && iat.pSleepRva) {
         LARGE_INTEGER qf{};
         QueryPerformanceFrequency(&qf);

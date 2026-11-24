@@ -5,7 +5,7 @@ TargetFPS=AUTO
 # Store: AUTO (detect MS Store / Steam / WGC), MSSTORE, STEAM, or WGC
 Store=AUTO
 
-# AutoEnableVRR: ASK (prompt [Y/N] if G-SYNC/FreeSync is OFF), YES, or NO
+# AutoEnableVRR: ASK (prompt [Y/N] if VRR / FreeSync / GSync is OFF), YES, or NO
 AutoEnableVRR=ASK
 
 # Language: AUTO (follows Windows PC language; first launch asks once EN/RU), EN, or RU

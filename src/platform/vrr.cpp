@@ -1,5 +1,5 @@
 // Copyright (c) 2026 CR1M (https://cr1m.net | support@cr1m.net)
-// Licensed under CR1M Source-Available License v1.0 (see LICENSE).
+// Licensed under CR1M Source Available License v1.0 (see LICENSE).
 // Redistribution of compiled binaries or modified forks is strictly prohibited.
 
 #include "cr1m/vrr.hpp"
@@ -16,7 +16,7 @@ namespace cr1m {
 
 namespace {
 
-// Minimal ADLX C-ABI interfaces verified against GPUOpen ADLX SDK
+// Minimal ADLX C ABI interfaces verified against GPUOpen ADLX SDK
 using FnAdlxRelease     = int (__stdcall*)(void*);
 using FnAdlxGetDispSvc  = int (__stdcall*)(void*, void**);
 using FnAdlxGetDisplays = int (__stdcall*)(void*, void**);

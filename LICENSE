@@ -1,17 +1,17 @@
-CR1M Source-Available License v1.0
+CR1M Source Available License v1.0
 Copyright (c) 2026 CR1M (https://cr1m.net | support@cr1m.net)
 All rights reserved.
 
 This software and its associated source code files ("the Software") are made
 publicly available strictly for transparency, security auditing, and personal
-educational/local compilation under the following terms:
+educational or local compilation under the following terms:
 
 1. PERMITTED PERSONAL USE
    Subject to full compliance with this License, CR1M grants you a limited,
-   revocable, non-exclusive, non-transferable, non-sublicensable license to:
+   revocable, nonexclusive, nontransferable, nonsublicensable license to:
    (a) View, read, inspect, and audit the source code in this repository; and
    (b) Download and compile the source code on hardware you personally own or
-       control, strictly for your own personal, non-commercial use.
+       control, strictly for your own personal, noncommercial use.
 
 2. PROHIBITED DISTRIBUTION, FORKS & COMMERCIAL USE
    Except as expressly permitted in Section 1, you may NOT:
@@ -20,9 +20,9 @@ educational/local compilation under the following terms:
        library (.dll), installer, archive, or build artifact derived in whole
        or in part from the Software, whether free of charge or for payment;
    (b) Distribute, publish, or share modified versions, forks, patches, or
-       derivative works of the Software — including any version in which
-       licensing, verification, integrity, or test-drive mechanisms have been
-       removed, disabled, or bypassed — via GitHub Releases, public or private
+       derivative works of the Software (including any version in which
+       licensing, verification, integrity, or test drive mechanisms have been
+       removed, disabled, or bypassed) via GitHub Releases, public or private
        repositories, Discord, Telegram, forums, file hosts, or any other medium;
    (c) Use the Software, in whole or in part, for any commercial purpose,
        resale, bundling, rebranding, or paid service without prior written
@@ -43,14 +43,14 @@ educational/local compilation under the following terms:
    binary distributions and infringing forks.
 
 5. NO AFFILIATION & DISCLAIMER OF WARRANTY
-   CR1M Pro Mod is an independent third-party performance modification and is
+   CR1M Pro Mod is an independent third party performance modification and is
    NOT affiliated with, endorsed by, sponsored by, or connected to Wargaming
    Group Limited or World of Tanks Blitz.
 
    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL
+   FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL
    CR1M BE LIABLE FOR ANY CLAIM, DAMAGES, ACCOUNT ACTIONS, OR OTHER LIABILITY
    ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR ITS USE. YOU
-   ASSUME SOLE RESPONSIBILITY FOR COMPLIANCE WITH APPLICABLE THIRD-PARTY
-   TERMS OF SERVICE AND END-USER LICENSE AGREEMENTS.
+   ASSUME SOLE RESPONSIBILITY FOR COMPLIANCE WITH APPLICABLE THIRD PARTY
+   TERMS OF SERVICE AND END USER LICENSE AGREEMENTS.

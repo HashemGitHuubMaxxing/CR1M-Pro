@@ -1,5 +1,5 @@
 // Copyright (c) 2026 CR1M (https://cr1m.net | support@cr1m.net)
-// Licensed under CR1M Source-Available License v1.0 (see LICENSE).
+// Licensed under CR1M Source Available License v1.0 (see LICENSE).
 // Redistribution of compiled binaries or modified forks is strictly prohibited.
 
 #include "cr1m/aob.hpp"
@@ -91,7 +91,7 @@ int main(int argc, char* argv[]) {
         ConPrint(os.str());
     }
 
-    // [2/5] Pre-flight Hardware Topology, Monitor Hz & VRR Audit
+    // [2/5] Preflight Hardware Topology, Monitor Hz & VRR Audit
     int monitorHz = DetectMaxMonitorHz();
     int targetFps = ComputeSafeTargetFps(cfg, monitorHz);
     RunVrrPreflight(cfg, nonInteractive, *proof);
@@ -105,7 +105,7 @@ int main(int argc, char* argv[]) {
         ConPrint(os.str());
     }
 
-    // [3/5] Multi-store discovery / interactive selector
+    // [3/5] Multi store discovery / interactive selector
     ConPrint(TR("  [3/5] Client Selection      : Scanning installed World of Tanks Blitz editions...\n",
                 "  [3/5] \xD0\x92\xD1\x8B\xD0\xB1\xD0\xBE\xD1\x80 \xD0\xBA\xD0\xBB\xD0\xB8\xD0\xB5\xD0\xBD\xD1\x82\xD0\xB0         : \xD0\x9F\xD0\xBE\xD0\xB8\xD1\x81\xD0\xBA \xD1\x83\xD1\x81\xD1\x82\xD0\xB0\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xBD\xD1\x8B\xD1\x85 \xD0\xB2\xD0\xB5\xD1\x80\xD1\x81\xD0\xB8\xD0\xB9 World of Tanks Blitz...\n"));
     ClientInventory inv = DiscoverClients();
@@ -280,7 +280,7 @@ int main(int argc, char* argv[]) {
         sess.baseAddr = baseAddr;
         sess.is64 = is64;
 
-        // [5/5] Single-read .text AOB scan + Patch + Verification
+        // [5/5] Single read .text AOB scan + Patch + Verification
         ConPrint(TR("  [5/5] Engine & Precision Aim: Scanning ",
                     "  [5/5] \xD0\x9F\xD0\xB0\xD1\x82\xD1\x87\xD0\xB8 \xD0\xB4\xD0\xB2\xD0\xB8\xD0\xB6\xD0\xBA\xD0\xB0 \xD0\xB8 \xD0\xB0\xD0\xB8\xD0\xBC\xD0\xB0   : \xD0\x90\xD0\xBD\xD0\xB0\xD0\xBB\xD0\xB8\xD0\xB7 ") +
                  (is64
@@ -332,7 +332,7 @@ int main(int argc, char* argv[]) {
                     "  -> \xD0\x9F\xD0\xBB\xD0\xB0\xD0\xB2\xD0\xBD\xD0\xBE\xD1\x81\xD1\x82\xD1\x8C \xD0\xB7\xD0\xB0\xD1\x81\xD0\xB2\xD0\xB5\xD1\x82\xD0\xB0   : \xD0\x90\xD0\xBA\xD1\x82\xD0\xB8\xD0\xB2\xD0\xBD\xD0\xB0 (\xD1\x83\xD1\x81\xD1\x82\xD1\x80\xD0\xB0\xD0\xBD\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5 \xD0\xBC\xD0\xB8\xD0\xBA\xD1\x80\xD0\xBE\xD1\x84\xD1\x80\xD0\xB8\xD0\xB7\xD0\xBE\xD0\xB2)\n\n"));
         SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
 
-        // Steam-only attach safeguard: never runs for WGC, MS Store, fresh Steam launch, or already-modded Steam
+        // Steam only attach safeguard: never runs for WGC, MS Store, fresh Steam launch, or already modded Steam
         if (syncPass == 0 && launchedStore == "STEAM_ATTACHED" && sess.win10WasUnpatched) {
             SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
             ConPrint(TR("  [!] Steam Attach Note: Steam Blitz was already running before CR1M Pro Mod.\n",

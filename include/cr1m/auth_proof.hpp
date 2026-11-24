@@ -1,5 +1,5 @@
 // Copyright (c) 2026 CR1M (https://cr1m.net | support@cr1m.net)
-// Licensed under CR1M Source-Available License v1.0 (see LICENSE).
+// Licensed under CR1M Source Available License v1.0 (see LICENSE).
 // Redistribution of compiled binaries or modified forks is strictly prohibited.
 
 #pragma once
@@ -28,7 +28,7 @@ std::optional<AuthProof> ActivateTrialTokenFromPub();
 
 namespace detail {
 
-// Embedded 2048-bit RSA Public Key (BCRYPT_RSAPUBLIC_BLOB — public key only; zero private secrets)
+// Embedded 2048 bit RSA Public Key (BCRYPT_RSAPUBLIC_BLOB: public key only, zero private secrets)
 inline constexpr std::array<uint8_t, 283> kRsaPubBlob = {
     0x52, 0x53, 0x41, 0x31, 0x00, 0x08, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0xfe, 0x53, 0x54, 0x1d, 0xd8,
@@ -70,7 +70,7 @@ inline constexpr uint64_t kExpPubX   = ExpectedPubKeyHash() ^ kPubMask;
 
 } // namespace detail
 
-// Non-default-constructible, move-only authorization capability token.
+// Move only authorization capability token (never default constructible).
 // Only VerifySignedReceipt() and ActivateTrialTokenFromPub() may mint a valid AuthProof.
 class AuthProof final {
 public:
