@@ -1,0 +1,12 @@
+# CR1M Pro Mod v2.3 Configuration
+# TargetFPS: AUTO (recommended: adapts to monitor Hz, capped at engine 154 FPS) or 30..154
+TargetFPS=AUTO
+
+# Store: AUTO (detect MS Store / Steam / WGC), MSSTORE, STEAM, or WGC
+Store=AUTO
+
+# AutoEnableVRR: ASK (prompt [Y/N] if G-SYNC/FreeSync is OFF), YES, or NO
+AutoEnableVRR=ASK
+
+# Language: AUTO (follows Windows PC language; first launch asks once EN/RU), EN, or RU
+Language=AUTO

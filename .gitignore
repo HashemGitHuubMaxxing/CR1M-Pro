@@ -1,0 +1,38 @@
+# Binaries & build artifacts (never commit)
+*.exe
+*.dll
+*.lib
+*.a
+*.o
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.res
+*.zip
+*.7z
+*.rar
+*.tar*
+
+# Secrets, keys & local runtime state (never commit)
+*.pem
+*.key
+*.cert
+*.dat
+*.bin
+*.log
+*.cfg
+
+# Build scripts & IDE files
+*.ps1
+*.bat
+*.cmd
+*.sln
+*.vcxproj*
+CMakeLists.txt
+Makefile
+build/
+out/
+.vs/
+.vscode/
+.superpowers/
