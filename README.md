@@ -65,8 +65,10 @@ CR1M Pro Mod modifies `wotblitz.exe` in memory at runtime to fix frame pacing, c
 - **Why Antivirus Heuristics May Flag This Mod:**
   - `NtSuspendProcess` / `VirtualAllocEx` / `WriteProcessMemory` (`src/core/win_runtime.cpp`, `src/engine/aob.cpp`, `src/engine/pacer.cpp`): used strictly to pause `wotblitz.exe` for ~1 ms, write verified byte patches, and allocate the 4 KB QPC frame pacer cave.
   - `GetSystemFirmwareTable` / `DeviceIoControl` (`src/auth/hwid.cpp`): read only SMBIOS and disk serial queries used strictly to compute a local SHA256 hardware fingerprint for license binding and spoofer warnings.
+  - `WinHttpReadData` / `MoveFileExW` / `CreateProcessW` (`src/auth/license.cpp`): used strictly when the user explicitly presses `U` to install an RSA 2048 and Windows CNG SHA 256 verified update in place from `https://cr1m.net` (zero `cmd.exe`, `powershell.exe`, or batch scripts).
 - **Windows Registry & Local State (Zero Startup or COM Persistence):**
-  - Performance tuning writes `HKCU\Software\Microsoft\DirectX\UserGpuPreferences` (GPU preference, Flip model, VRR) and `HKCU\System\GameConfigStore` (`GameDVR`), and stores user config, language, signed signature cache, and license cache in `%APPDATA%\CR1M_Pro_Mod\`.
+  - Performance tuning writes `HKCU\Software\Microsoft\DirectX\UserGpuPreferences` (GPU preference, Flip model, VRR) and `HKCU\System\GameConfigStore` (`GameDVR`), reads primary monitor EDID bytes read only from `HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\...\Device Parameters\EDID` (`src/platform/vrr.cpp`) to detect hardware VRR capability, and stores user config, language, signed signature cache, and license cache in `%APPDATA%\CR1M_Pro_Mod\`.
+  - User confirmed OTA updates write a temporary `.new` file and rename the prior binary to `.old` next to the executable during atomic swap; the relaunched binary automatically deletes `.old` on startup.
   - During the 15 minute Free Test Drive, `src/auth/trial.cpp` stores a 76 byte encrypted binary countdown record (`ConfigData` under a dedicated `CLSID` key plus hidden local cache files) solely to track trial elapsed time. **No `InprocServer32`, COM server, DLL hook, Run key, or startup persistence is ever created.**
 - **EULA Notice:** Although CR1M Pro Mod is strictly performance and bugfix oriented with zero cheat features, modifying game memory at runtime may conflict with Wargaming's EULA. Use at your own discretion.
 
@@ -83,11 +85,11 @@ include/cr1m/
   i18n.hpp           # Auto detected EN/RU console localization
   config.hpp         # config.txt parser
   hwid.hpp           # Silicon fingerprint (CPUID/SMBIOS/DXGI/disk) & spoofer audit
-  auth.hpp           # Client side RSA 2048 receipt & signed status verification
+  auth.hpp           # RSA 2048 receipt, status, hotfix manifest & signed OTA updater
   trial.hpp          # 15 minute Free Test Drive & live rollback watchdog
-  vrr.hpp            # Refresh rate, GPU topology, DXGI/ADLX/NVAPI VRR preflight
+  vrr.hpp            # Primary EDID VRR parser, GPU topology, DXGI/ADLX/NVAPI & GPU apps
   clients.hpp        # MS Store (x64), Steam (x86), and WGC (x86) discovery/launch
-  aob.hpp            # Single read wildcard/alternation AOB scanner & PE/IAT parser
+  aob.hpp            # Single read AOB scanner, PE/IAT structural & manifest rule parsers
   pacer.hpp          # Pure user mode QPC + PAUSE x64/x86 code cave emitters
   patcher.hpp        # System priority tweaks, rollback, and x64/x86 engine patchers
 
@@ -96,7 +98,7 @@ src/
   auth/              # hwid.cpp, license.cpp, trial.cpp, trial_watchdog.cpp
   platform/          # vrr.cpp, clients.cpp
   engine/            # aob.cpp, pacer.cpp, patcher_x64.cpp, patcher_x86.cpp
-  main.cpp           # Application entry point
+  main.cpp           # Startup OTA gate, preflight, patching & interactive client switcher
 ```
 
 ---

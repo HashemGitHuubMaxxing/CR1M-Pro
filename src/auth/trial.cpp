@@ -182,7 +182,7 @@ uint64_t GetUnixUtcSeconds() {
 }
 
 uint64_t QueryNetUtcSeconds() {
-    HINTERNET hSess = WinHttpOpen(L"CR1M-Pro-Mod/2.3", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+    HINTERNET hSess = WinHttpOpen(L"CR1M-Pro-Mod/2.4", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                   WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSess) return 0;
     WinHttpSetTimeouts(hSess, 500, 500, 500, 500);
