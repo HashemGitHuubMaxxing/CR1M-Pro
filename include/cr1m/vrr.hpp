@@ -8,9 +8,21 @@
 #include "cr1m/build_config.hpp"
 #include "cr1m/config.hpp"
 #include <cstdint>
+#include <span>
 #include <string>
 
 namespace cr1m {
+
+struct EdidVrrCaps {
+    bool parsed = false;
+    bool vrrSupported = false;
+    bool hasFreeSyncVsdb = false;
+    bool hasHdmiVrr = false;
+    bool hasContinuousRange = false;
+    uint16_t minHz = 0;
+    uint16_t maxHz = 0;
+    std::string sourceTag;
+};
 
 struct VrrAuditResult {
     bool hasNvidiaGpu = false;
@@ -25,11 +37,18 @@ struct VrrAuditResult {
     bool adlxFreeSyncEnabled = false;
     bool nvDrsChecked = false;
     uint32_t nvVrrMode = 0; // 0=disabled, 1=FS, 2=FS+Win
+    UINT primaryAdapterVendorId = 0;
+    std::string primaryDisplayName;
+    EdidVrrCaps primaryEdidVrr{};
+    bool primaryVrrHardwareKnown = false;
+    bool primaryVrrHardwareSupported = false;
+    bool manualControlPanelNeeded = false;
     bool needsPrompt = false;
     std::string gpuSummary;
     std::string topologySummary;
 };
 
+EdidVrrCaps    ParseEdidVrrCapabilities(std::span<const uint8_t> edid, bool isDigitalVrrCapableLink);
 int            DetectMaxMonitorHz();
 int            ComputeSafeTargetFps(const ModConfig& cfg, int monitorHz);
 bool           EnsureExeGpuPreferences(const std::wstring& exePath);

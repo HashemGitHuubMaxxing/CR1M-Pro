@@ -507,14 +507,28 @@ bool WriteBytesAtomicFileW(const std::wstring& path, const std::vector<uint8_t>&
 
 } // namespace
 
+bool CleanupOtaOldFileAtPathForTest(const std::wstring& exePath) {
+    if (exePath.empty()) return false;
+    std::wstring oldExe = exePath + L".old";
+    if (GetFileAttributesW(oldExe.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        return true;
+    }
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (DeleteFileW(oldExe.c_str())) {
+            return true;
+        }
+        DWORD err = GetLastError();
+        if (err == ERROR_FILE_NOT_FOUND) return true;
+        if (err != ERROR_SHARING_VIOLATION && err != ERROR_ACCESS_DENIED) break;
+        Sleep(100);
+    }
+    return false;
+}
+
 void CleanupPreviousOtaBackup() {
     std::wstring curExe = GetCurrentExePathW();
     if (curExe.empty()) return;
-    std::wstring oldExe = curExe + L".old";
-    if (!DeleteFileW(oldExe.c_str()) && GetLastError() == ERROR_SHARING_VIOLATION) {
-        Sleep(80);
-        DeleteFileW(oldExe.c_str());
-    }
+    CleanupOtaOldFileAtPathForTest(curExe);
 }
 
 void StartAsyncOtaUpdateCheck() {
@@ -586,9 +600,12 @@ bool PerformVerifiedOtaUpdate(const SignedReleaseManifest& rel) {
     bool got = HttpsGetBytes(CR1M_API_HOST_W, Utf8ToWide(rel.url), 3000, 12000,
                              static_cast<size_t>(rel.size) + 4096u, httpCode, bin);
     if (!got || httpCode != 200 || bin.size() != static_cast<size_t>(rel.size)) {
+        DWORD lastErr = GetLastError();
         SetColor(FOREGROUND_RED | FOREGROUND_INTENSITY);
-        ConPrint(TR("  [X] OTA download failed. Please download manually at https://cr1m.net/test-drive\n",
-                    "  [X] \xD0\x9E\xD1\x88\xD0\xB8\xD0\xB1\xD0\xBA\xD0\xB0 \xD0\xB7\xD0\xB0\xD0\xB3\xD1\x80\xD1\x83\xD0\xB7\xD0\xBA\xD0\xB8. \xD0\xA1\xD0\xBA\xD0\xB0\xD1\x87\xD0\xB0\xD0\xB9\xD1\x82\xD0\xB5 \xD0\xB2\xD1\x80\xD1\x83\xD1\x87\xD0\xBD\xD1\x83\xD1\x8E: https://cr1m.net/test-drive\n"));
+        ConPrint(TR("  [X] OTA download failed (HTTP ", "  [X] \xD0\x9E\xD1\x88\xD0\xB8\xD0\xB1\xD0\xBA\xD0\xB0 \xD0\xB7\xD0\xB0\xD0\xB3\xD1\x80\xD1\x83\xD0\xB7\xD0\xBA\xD0\xB8 (HTTP ") +
+                 std::to_string(httpCode) + ", err " + std::to_string(lastErr) +
+                 TR("). Download manually at https://cr1m.net/test-drive\n",
+                    "). \xD0\xA1\xD0\xBA\xD0\xB0\xD1\x87\xD0\xB0\xD0\xB9\xD1\x82\xD0\xB5 \xD0\xB2\xD1\x80\xD1\x83\xD1\x87\xD0\xBD\xD1\x83\xD1\x8E: https://cr1m.net/test-drive\n"));
         SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
         return false;
     }
@@ -643,7 +660,38 @@ bool PerformVerifiedOtaUpdate(const SignedReleaseManifest& rel) {
     SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
 
     std::wstring curDir = curExe.substr(0, curExe.find_last_of(L"\\/"));
-    ShellExecuteW(NULL, L"open", curExe.c_str(), NULL, curDir.c_str(), SW_SHOWNORMAL);
+    std::wstring origArgs;
+    if (const wchar_t* rawCmd = GetCommandLineW()) {
+        const wchar_t* p = rawCmd;
+        while (*p == L' ' || *p == L'\t') ++p;
+        if (*p == L'"') {
+            ++p;
+            while (*p && *p != L'"') ++p;
+            if (*p == L'"') ++p;
+        } else {
+            while (*p && *p != L' ' && *p != L'\t') ++p;
+        }
+        while (*p == L' ' || *p == L'\t') ++p;
+        origArgs = p;
+    }
+    std::wstring cmdLine = L"\"" + curExe + L"\"";
+    if (!origArgs.empty()) {
+        cmdLine += L" ";
+        cmdLine += origArgs;
+    }
+    std::vector<wchar_t> cmdBuf(cmdLine.begin(), cmdLine.end());
+    cmdBuf.push_back(L'\0');
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(curExe.c_str(), cmdBuf.data(), NULL, NULL, FALSE,
+                       CREATE_NEW_CONSOLE, NULL, curDir.c_str(), &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return true;
+    }
+    ShellExecuteW(NULL, L"open", curExe.c_str(),
+                  origArgs.empty() ? NULL : origArgs.c_str(), curDir.c_str(), SW_SHOWNORMAL);
     return true;
 }
 

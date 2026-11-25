@@ -64,6 +64,7 @@ void CleanupPreviousOtaBackup();
 void StartAsyncOtaUpdateCheck();
 bool TryConsumeVerifiedOtaUpdate(SignedReleaseManifest& outManifest, DWORD maxWaitMs = 0);
 bool PerformVerifiedOtaUpdate(const SignedReleaseManifest& rel);
+bool CleanupOtaOldFileAtPathForTest(const std::wstring& exePath);
 
 std::optional<AuthProof> VerifySignedReceipt(const HwidBundle& hb,
                                              const std::string& receiptText,

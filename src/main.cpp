@@ -46,11 +46,14 @@ int main(int argc, char* argv[]) {
     timeBeginPeriod(1);
 
     bool nonInteractive = false;
+    bool noOta = false;
     bool resetLang = false;
     std::string cliLang;
     for (int i = 1; i < argc; ++i) {
         if (_stricmp(argv[i], "--noprompt") == 0 || _stricmp(argv[i], "--no-prompt") == 0) {
             nonInteractive = true;
+        } else if (_stricmp(argv[i], "--no-ota") == 0) {
+            noOta = true;
         } else if (_stricmp(argv[i], "--reset-lang") == 0) {
             resetLang = true;
         } else if (_stricmp(argv[i], "--lang=ru") == 0) {
@@ -58,6 +61,10 @@ int main(int argc, char* argv[]) {
         } else if (_stricmp(argv[i], "--lang=en") == 0) {
             cliLang = "EN";
         }
+    }
+
+    if (!noOta) {
+        StartAsyncOtaUpdateCheck();
     }
 
     ModConfig cfg = LoadConfig();
@@ -92,9 +99,6 @@ int main(int argc, char* argv[]) {
         ConPrint(os.str());
     }
 
-    // Start zero latency background OTA release check in parallel with preflight and game launch
-    StartAsyncOtaUpdateCheck();
-
     // [2/5] Preflight Hardware Topology, Monitor Hz & VRR Audit
     int monitorHz = DetectMaxMonitorHz();
     int targetFps = ComputeSafeTargetFps(cfg, monitorHz);
@@ -107,6 +111,33 @@ int main(int argc, char* argv[]) {
            << targetFps << TR(" FPS (Safe Ceiling <=154)\n",
                               " FPS (\xD0\xB1\xD0\xB5\xD0\xB7\xD0\xBE\xD0\xBF\xD0\xB0\xD1\x81\xD0\xBD\xD1\x8B\xD0\xB9 \xD0\xBB\xD0\xB8\xD0\xBC\xD0\xB8\xD1\x82 <=154)\n");
         ConPrint(os.str());
+    }
+
+    if (!noOta && !nonInteractive) {
+        SignedReleaseManifest startupOta{};
+        if (TryConsumeVerifiedOtaUpdate(startupOta, 0)) {
+            SetColor(FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+            ConPrint(TR("\n  [!] Update Available        : CR1M Pro Mod v",
+                        "\n  [!] \xD0\x94\xD0\xBE\xD1\x81\xD1\x82\xD1\x83\xD0\xBF\xD0\xBD\xD0\xBE \xD0\xBE\xD0\xB1\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5 : CR1M Pro Mod v") +
+                     startupOta.version + TR(" (verified RSA 2048 signed release)\n",
+                                             " (\xD0\xBF\xD0\xBE\xD0\xB4\xD0\xBF\xD0\xB8\xD1\x81\xD0\xB0\xD0\xBD\xD0\xBD\xD1\x8B\xD0\xB9 \xD1\x80\xD0\xB5\xD0\xBB\xD0\xB8\xD0\xB7 RSA 2048)\n"));
+            SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+            ConPrint(TR("      Press U + ENTER to install cleanly now, or press ENTER to skip and launch: ",
+                        "      \xD0\x9D\xD0\xB0\xD0\xB6\xD0\xBC\xD0\xB8\xD1\x82\xD0\xB5 U + ENTER \xD0\xB4\xD0\xBB\xD1\x8F \xD1\x83\xD1\x81\xD1\x82\xD0\xB0\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBA\xD0\xB8 \xD0\xB8\xD0\xBB\xD0\xB8 ENTER \xD0\xB4\xD0\xBB\xD1\x8F \xD0\xBF\xD1\x80\xD0\xBE\xD0\xBF\xD1\x83\xD1\x81\xD0\xBA\xD0\xB0: "));
+            std::string ans;
+            if (std::getline(std::cin, ans)) {
+                std::string t = Trim(ans);
+                std::string u = ToUpperAscii(t);
+                if (!u.empty() && (u[0] == 'U' || t.find("\xD0\x93") == 0 || t.find("\xD0\xB3") == 0)) {
+                    if (PerformVerifiedOtaUpdate(startupOta)) {
+                        proof->revoke();
+                        timeEndPeriod(1);
+                        return 0;
+                    }
+                }
+            }
+            ConPrint("\n");
+        }
     }
 
     // [3/5]..[5/5] Multi store client launch, patching, and interactive client switcher loop

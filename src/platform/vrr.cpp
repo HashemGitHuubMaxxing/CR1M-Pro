@@ -7,10 +7,12 @@
 #include "cr1m/i18n.hpp"
 #include "cr1m/util.hpp"
 #include <dxgi1_6.h>
+#include <shellapi.h>
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <vector>
 
 namespace cr1m {
 
@@ -294,6 +296,7 @@ void DetectDeviceTopology(VrrAuditResult& vr) {
                     out->Release();
                 }
                 if (ownsPrimary) {
+                    vr.primaryAdapterVendorId = d.VendorId;
                     if (isIgpu) primaryOnIgpu = true; else primaryOnDgpu = true;
                 }
 
@@ -354,7 +357,269 @@ void DetectDeviceTopology(VrrAuditResult& vr) {
     }
 }
 
+void ParseCtaDataBlocks(const uint8_t* data, size_t len, EdidVrrCaps& out) {
+    size_t pos = 0;
+    while (pos < len) {
+        uint8_t hdr = data[pos];
+        uint8_t tag = static_cast<uint8_t>((hdr >> 5) & 0x07u);
+        uint8_t blen = static_cast<uint8_t>(hdr & 0x1Fu);
+        if (pos + 1u + blen > len) break;
+        const uint8_t* p = data + pos + 1u;
+        if (tag == 3u && blen >= 3u) {
+            // AMD FreeSync Vendor Specific Data Block (IEEE OUI 00 00 1A)
+            if (p[0] == 0x1Au && p[1] == 0x00u && p[2] == 0x00u && blen >= 7u) {
+                out.hasFreeSyncVsdb = true;
+                out.vrrSupported = true;
+                uint16_t fMin = p[5];
+                uint16_t fMax = p[6];
+                if (fMin >= 20u && fMax > fMin && fMax <= 1000u) {
+                    out.minHz = fMin;
+                    out.maxHz = fMax;
+                }
+            }
+            // HDMI 2.1 Forum Vendor Specific Data Block (IEEE OUI C4 5D D8)
+            if (p[0] == 0xD8u && p[1] == 0x5Du && p[2] == 0xC4u && blen >= 9u) {
+                uint16_t vMin = (blen >= 10u) ? static_cast<uint16_t>(p[9] & 0x3Fu) : 0u;
+                uint16_t vMax = (blen >= 11u)
+                    ? static_cast<uint16_t>(((static_cast<uint16_t>(p[9]) & 0xC0u) << 2) | p[10])
+                    : 0u;
+                bool cinemaOrCnm = ((p[8] & 0x50u) != 0);
+                if ((vMin >= 20u && vMax > vMin && vMax <= 1000u) || vMin > 0u || cinemaOrCnm) {
+                    out.hasHdmiVrr = true;
+                    out.vrrSupported = true;
+                    if (vMin >= 20u && vMax > vMin && vMax <= 1000u && out.maxHz == 0u) {
+                        out.minHz = vMin;
+                        out.maxHz = vMax;
+                    }
+                }
+            }
+        }
+        pos += 1u + blen;
+    }
+}
+
+bool QueryPrimaryDisplayEdidVrr(std::string& outDisplayName, EdidVrrCaps& outCaps) {
+    outDisplayName.clear();
+    outCaps = EdidVrrCaps{};
+
+    UINT32 numPaths = 0, numModes = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &numPaths, &numModes) != ERROR_SUCCESS ||
+        numPaths == 0 || numModes == 0 || numPaths > 128 || numModes > 256) {
+        return false;
+    }
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(numPaths);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(numModes);
+    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &numPaths, paths.data(),
+                           &numModes, modes.data(), nullptr) != ERROR_SUCCESS) {
+        return false;
+    }
+
+    int primaryIdx = -1;
+    for (UINT32 i = 0; i < numPaths; ++i) {
+        UINT32 smIdx = paths[i].sourceInfo.modeInfoIdx;
+        if (smIdx < numModes &&
+            modes[smIdx].infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE &&
+            modes[smIdx].sourceMode.position.x == 0 &&
+            modes[smIdx].sourceMode.position.y == 0) {
+            primaryIdx = static_cast<int>(i);
+            break;
+        }
+    }
+    if (primaryIdx < 0) primaryIdx = 0;
+
+    DISPLAYCONFIG_TARGET_DEVICE_NAME target{};
+    target.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+    target.header.size = sizeof(target);
+    target.header.adapterId = paths[static_cast<size_t>(primaryIdx)].targetInfo.adapterId;
+    target.header.id = paths[static_cast<size_t>(primaryIdx)].targetInfo.id;
+    if (DisplayConfigGetDeviceInfo(&target.header) != ERROR_SUCCESS) {
+        return false;
+    }
+
+    if (target.monitorFriendlyDeviceName[0] != L'\0') {
+        outDisplayName = WideToUtf8(target.monitorFriendlyDeviceName);
+    }
+
+    std::wstring devPath = target.monitorDevicePath;
+    if (devPath.size() < 12) return false;
+    if (devPath.rfind(L"\\\\?\\", 0) == 0) devPath = devPath.substr(4);
+
+    std::vector<std::wstring> parts;
+    size_t start = 0;
+    while (start <= devPath.size()) {
+        size_t sep = devPath.find(L'#', start);
+        if (sep == std::wstring::npos) {
+            parts.push_back(devPath.substr(start));
+            break;
+        }
+        parts.push_back(devPath.substr(start, sep - start));
+        start = sep + 1;
+    }
+    if (parts.size() < 3 || parts[0].empty() || parts[1].empty() || parts[2].empty()) {
+        return false;
+    }
+    for (size_t k = 0; k < 3; ++k) {
+        if (parts[k].find(L'\\') != std::wstring::npos || parts[k].find(L"..") != std::wstring::npos) {
+            return false;
+        }
+    }
+    if (outDisplayName.empty()) {
+        outDisplayName = WideToUtf8(parts[1]);
+    }
+
+    std::wstring regPath = L"SYSTEM\\CurrentControlSet\\Enum\\" + parts[0] + L"\\" + parts[1] + L"\\" + parts[2] + L"\\Device Parameters";
+    HKEY hk = NULL;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, regPath.c_str(), 0, KEY_READ, &hk) != ERROR_SUCCESS) {
+        return false;
+    }
+    DWORD valType = 0;
+    DWORD cb = 0;
+    std::vector<uint8_t> edid;
+    if (RegQueryValueExW(hk, L"EDID", NULL, &valType, NULL, &cb) == ERROR_SUCCESS &&
+        valType == REG_BINARY && cb >= 128 && cb <= 4096) {
+        edid.resize(cb);
+        if (RegQueryValueExW(hk, L"EDID", NULL, &valType, edid.data(), &cb) != ERROR_SUCCESS) {
+            edid.clear();
+        }
+    }
+    RegCloseKey(hk);
+    if (edid.size() < 128) return false;
+
+    auto tech = target.outputTechnology;
+    bool digitalVrrLink =
+        tech == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EXTERNAL ||
+        tech == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED ||
+        tech == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EXTERNAL ||
+        tech == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED ||
+        tech == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_HDMI ||
+        tech == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL;
+
+    outCaps = ParseEdidVrrCapabilities(std::span<const uint8_t>(edid.data(), edid.size()), digitalVrrLink);
+    return outCaps.parsed;
+}
+
+bool TryLaunchFileOrShellW(const std::wstring& target) {
+    if (target.empty()) return false;
+    HINSTANCE r = ShellExecuteW(NULL, L"open", target.c_str(), NULL, NULL, SW_SHOWNORMAL);
+    return reinterpret_cast<intptr_t>(r) > 32;
+}
+
+bool OpenGpuControlPanel(bool preferNvidia, bool preferAmd) {
+    wchar_t pfBuf[MAX_PATH]{};
+    DWORD pfLen = GetEnvironmentVariableW(L"ProgramFiles", pfBuf, static_cast<DWORD>(_countof(pfBuf)));
+    std::wstring pf = (pfLen > 0 && pfLen < _countof(pfBuf)) ? std::wstring(pfBuf, pfLen) : L"C:\\Program Files";
+
+    if (preferNvidia) {
+        std::wstring nvApp = pf + L"\\NVIDIA Corporation\\NVIDIA App\\CEF\\NVIDIA App.exe";
+        if (GetFileAttributesW(nvApp.c_str()) != INVALID_FILE_ATTRIBUTES && TryLaunchFileOrShellW(nvApp)) {
+            return true;
+        }
+        if (TryLaunchFileOrShellW(L"shell:AppsFolder\\NVIDIACorp.NVIDIAControlPanel_56jybvy8sckqj!NVIDIACorp.NVIDIAControlPanel")) {
+            return true;
+        }
+    }
+    if (preferAmd) {
+        std::wstring amdApp = pf + L"\\AMD\\CNext\\CNext\\RadeonSoftware.exe";
+        if (GetFileAttributesW(amdApp.c_str()) != INVALID_FILE_ATTRIBUTES && TryLaunchFileOrShellW(amdApp)) {
+            return true;
+        }
+        if (TryLaunchFileOrShellW(L"shell:AppsFolder\\AdvancedMicroDevicesInc-2.AMDRadeonSoftware_0a9344xs7nr4m!AMDRadeonSoftware")) {
+            return true;
+        }
+    }
+    return TryLaunchFileOrShellW(L"ms-settings:display-advancedgraphics");
+}
+
 } // namespace
+
+EdidVrrCaps ParseEdidVrrCapabilities(std::span<const uint8_t> edid, bool isDigitalVrrCapableLink) {
+    EdidVrrCaps out{};
+    if (edid.size() < 128u) return out;
+    static constexpr uint8_t kEdidMagic[8] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
+    if (memcmp(edid.data(), kEdidMagic, sizeof(kEdidMagic)) != 0) return out;
+
+    out.parsed = true;
+    uint16_t rangeMin = 0, rangeMax = 0;
+    bool continuousFreq = ((edid[24] & 0x01u) != 0);
+
+    for (size_t descOff = 54u; descOff + 18u <= 126u; descOff += 18u) {
+        const uint8_t* d = edid.data() + descOff;
+        if (d[0] == 0x00u && d[1] == 0x00u && d[2] == 0x00u && d[3] == 0xFDu) {
+            uint8_t flags = d[4];
+            uint16_t minV = static_cast<uint16_t>(d[5]) + ((flags & 0x01u) ? 255u : 0u);
+            uint16_t maxV = static_cast<uint16_t>(d[6]) + ((flags & 0x02u) ? 255u : 0u);
+            if (minV >= 24u && maxV > minV && maxV <= 1000u && (maxV - minV) >= 15u) {
+                rangeMin = minV;
+                rangeMax = maxV;
+                if (continuousFreq && isDigitalVrrCapableLink) {
+                    out.hasContinuousRange = true;
+                }
+            }
+        }
+    }
+
+    for (size_t blkOff = 128u; blkOff + 128u <= edid.size(); blkOff += 128u) {
+        const uint8_t* blk = edid.data() + blkOff;
+        if (blk[0] == 0x02u) {
+            uint8_t dtdStart = blk[2];
+            if (dtdStart > 4u && dtdStart <= 127u) {
+                ParseCtaDataBlocks(blk + 4u, static_cast<size_t>(dtdStart - 4u), out);
+            }
+        } else if (blk[0] == 0x70u) {
+            size_t secEnd = std::min<size_t>(5u + static_cast<size_t>(blk[2]), 126u);
+            size_t pos = 5u;
+            while (pos + 3u <= secEnd) {
+                uint8_t tag = blk[pos];
+                uint8_t dlen = blk[pos + 2u];
+                if (tag == 0u && dlen == 0u) break;
+                if (pos + 3u + dlen > secEnd) break;
+                const uint8_t* p = blk + pos + 3u;
+                if (tag == 0x81u && dlen >= 4u) {
+                    // DisplayID 2.0 CTA container block embedding CTA 861 data blocks
+                    ParseCtaDataBlocks(p, dlen, out);
+                } else if (tag == 0x7Fu && dlen >= 7u) {
+                    if (p[0] == 0x1Au && p[1] == 0x00u && p[2] == 0x00u) {
+                        out.hasFreeSyncVsdb = true;
+                        out.vrrSupported = true;
+                        uint16_t fMin = p[5];
+                        uint16_t fMax = p[6];
+                        if (fMin >= 20u && fMax > fMin && fMax <= 1000u) {
+                            out.minHz = fMin;
+                            out.maxHz = fMax;
+                        }
+                    }
+                } else if (tag == 0x25u && dlen >= 9u) {
+                    uint16_t minV = p[6];
+                    uint16_t maxV = static_cast<uint16_t>(p[7]) | (static_cast<uint16_t>(p[8] & 0x03u) << 8);
+                    if (minV >= 20u && maxV > minV && maxV <= 1000u) {
+                        out.hasContinuousRange = true;
+                        if (out.maxHz == 0u) {
+                            out.minHz = minV;
+                            out.maxHz = maxV;
+                        }
+                    }
+                }
+                pos += 3u + dlen;
+            }
+        }
+    }
+
+    if (out.hasFreeSyncVsdb) {
+        out.vrrSupported = true;
+        out.sourceTag = "FreeSync";
+    } else if (out.hasHdmiVrr) {
+        out.vrrSupported = true;
+        out.sourceTag = "HDMI VRR";
+    } else if (out.hasContinuousRange) {
+        out.vrrSupported = true;
+        out.sourceTag = "Adaptive Sync";
+    }
+    if (out.minHz == 0u && rangeMin > 0u && rangeMax > rangeMin) {
+        out.minHz = rangeMin;
+        out.maxHz = rangeMax;
+    }
+    return out;
+}
 
 int DetectMaxMonitorHz() {
     int maxHz = 0, primHz = 0;
@@ -422,6 +687,7 @@ VrrAuditResult RunVrrPreflight(const ModConfig& cfg, bool nonInteractive, const 
     if (!proof.isValid()) return vr;
 
     DetectDeviceTopology(vr);
+    vr.primaryVrrHardwareKnown = QueryPrimaryDisplayEdidVrr(vr.primaryDisplayName, vr.primaryEdidVrr);
 
     std::wstring winReg = ReadWinVrrReg();
     vr.winVrrRegEnabled = (winReg.find(L"VRROptimizeEnable=1") != std::wstring::npos);
@@ -436,15 +702,46 @@ VrrAuditResult RunVrrPreflight(const ModConfig& cfg, bool nonInteractive, const 
         }
     }
 
+    bool primaryIsAmd = (vr.primaryAdapterVendorId == 0x1002u) || (vr.isHybridIgpuDisplay && vr.hasAmdGpu);
+    bool primaryIsNvidia = (!vr.isHybridIgpuDisplay && vr.hasNvidiaGpu &&
+                            (vr.primaryAdapterVendorId == 0x10DEu || vr.primaryAdapterVendorId == 0u));
+
+    vr.primaryVrrHardwareSupported = vr.primaryEdidVrr.vrrSupported ||
+                                     (primaryIsAmd && vr.adlxChecked && vr.adlxFreeSyncSupported);
+    if (!vr.primaryVrrHardwareKnown && primaryIsAmd && vr.adlxChecked) {
+        vr.primaryVrrHardwareKnown = true;
+    }
+
+    bool vrrCapableOrUnknown = (!vr.primaryVrrHardwareKnown || vr.primaryVrrHardwareSupported);
     bool winOff = !vr.winVrrRegEnabled;
-    bool amdOff = (vr.adlxFreeSyncSupported && !vr.adlxFreeSyncEnabled);
-    bool nvOff  = (!vr.isHybridIgpuDisplay && vr.hasNvidiaGpu && vr.nvDrsChecked && vr.nvVrrMode == 0);
-    vr.needsPrompt = (winOff || amdOff || nvOff);
+    bool amdOff = (primaryIsAmd && vr.adlxChecked && vr.adlxFreeSyncSupported && !vr.adlxFreeSyncEnabled);
+    bool amdNeedManual = (primaryIsAmd && vr.primaryVrrHardwareSupported && !vr.adlxChecked);
+    bool nvOff  = (primaryIsNvidia && vr.nvDrsChecked && vrrCapableOrUnknown && vr.nvVrrMode < 2u);
+    vr.manualControlPanelNeeded = (amdNeedManual || nvOff);
+    vr.needsPrompt = (winOff || amdOff || amdNeedManual || nvOff);
 
     ConPrint(TR("  [2/5] System & GPU Topology : ", "  [2/5] \xD0\xA3\xD1\x81\xD1\x82\xD1\x80\xD0\xBE\xD0\xB9\xD1\x81\xD1\x82\xD0\xB2\xD0\xBE \xD0\xB8 GPU      : ") +
              vr.topologySummary + "\n");
     ConPrint(TR("        -> Graphics Adapters  : ", "        -> \xD0\x92\xD0\xB8\xD0\xB4\xD0\xB5\xD0\xBE\xD0\xB0\xD0\xB4\xD0\xB0\xD0\xBF\xD1\x82\xD0\xB5\xD1\x80\xD1\x8B      : ") +
              (vr.gpuSummary.empty() ? TR("Standard Display", "\xD0\xA1\xD1\x82\xD0\xB0\xD0\xBD\xD0\xB4\xD0\xB0\xD1\x80\xD1\x82\xD0\xBD\xD1\x8B\xD0\xB9 \xD0\xB0\xD0\xB4\xD0\xB0\xD0\xBF\xD1\x82\xD0\xB5\xD1\x80") : vr.gpuSummary) + "\n");
+    if (vr.primaryVrrHardwareKnown) {
+        std::string dispLabel = vr.primaryDisplayName.empty() ? std::string("Primary Panel") : vr.primaryDisplayName;
+        if (vr.primaryVrrHardwareSupported) {
+            std::string rangeStr;
+            if (vr.primaryEdidVrr.minHz > 0 && vr.primaryEdidVrr.maxHz > vr.primaryEdidVrr.minHz) {
+                rangeStr = std::to_string(vr.primaryEdidVrr.minHz) + " to " +
+                           std::to_string(vr.primaryEdidVrr.maxHz) + " Hz";
+            }
+            std::string tag = vr.primaryEdidVrr.sourceTag.empty() ? std::string("VRR") : vr.primaryEdidVrr.sourceTag;
+            ConPrint(TR("        -> Display VRR Cap    : ", "        -> \xD0\xAD\xD0\xBA\xD1\x80\xD0\xB0\xD0\xBD VRR          : ") +
+                     dispLabel + " (" + TR("Supported", "\xD0\x9F\xD0\xBE\xD0\xB4\xD0\xB4\xD0\xB5\xD1\x80\xD0\xB6\xD0\xB8\xD0\xB2\xD0\xB0\xD0\xB5\xD1\x82\xD1\x81\xD1\x8F") +
+                     (rangeStr.empty() ? "" : ": " + rangeStr) + " via " + tag + ")\n");
+        } else {
+            ConPrint(TR("        -> Display VRR Cap    : ", "        -> \xD0\xAD\xD0\xBA\xD1\x80\xD0\xB0\xD0\xBD VRR          : ") +
+                     dispLabel + TR(" (Fixed Refresh Panel; VRR Not Supported)\n",
+                                    " (\xD0\xA4\xD0\xB8\xD0\xBA\xD1\x81. \xD1\x87\xD0\xB0\xD1\x81\xD1\x82\xD0\xBE\xD1\x82\xD0\xB0; VRR \xD0\xBD\xD0\xB5 \xD0\xBF\xD0\xBE\xD0\xB4\xD0\xB4\xD0\xB5\xD1\x80\xD0\xB6\xD0\xB8\xD0\xB2\xD0\xB0\xD0\xB5\xD1\x82\xD1\x81\xD1\x8F)\n"));
+        }
+    }
     ConPrint(TR("        -> Windows VRR Opt    : ", "        -> Windows VRR        : ") +
              (vr.winVrrRegEnabled ? TR("ENABLED", "\xD0\x92\xD0\x9A\xD0\x9B") : TR("DISABLED", "\xD0\x92\xD0\xAB\xD0\x9A\xD0\x9B")) +
              TR(" | DXGI Tearing: ", " | DXGI Tearing: ") +
@@ -467,18 +764,29 @@ VrrAuditResult RunVrrPreflight(const ModConfig& cfg, bool nonInteractive, const 
 
     if (vr.needsPrompt && cfg.autoVrr != "NO") {
         bool doEnable = (cfg.autoVrr == "YES");
+        bool openApp = false;
         if (!doEnable && cfg.autoVrr == "ASK" && !nonInteractive) {
             SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-            ConPrint(TR("\n  [!] TIP: Best zero-tearing smoothness requires VRR / FreeSync / G-SYNC enabled.\n",
-                        "\n  [!] \xD0\xA1\xD0\x9E\xD0\x92\xD0\x95\xD0\xA2: \xD0\x94\xD0\xBB\xD1\x8F \xD0\xB8\xD0\xB4\xD0\xB5\xD0\xB0\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xBE\xD0\xB9 \xD0\xBF\xD0\xBB\xD0\xB0\xD0\xB2\xD0\xBD\xD0\xBE\xD1\x81\xD1\x82\xD0\xB8 \xD0\xB1\xD0\xB5\xD0\xB7 \xD1\x80\xD0\xB0\xD0\xB7\xD1\x80\xD1\x8B\xD0\xB2\xD0\xBE\xD0\xB2 \xD0\xB2\xD0\xBA\xD0\xBB\xD1\x8E\xD1\x87\xD0\xB8\xD1\x82\xD0\xB5 VRR / FreeSync / G-SYNC.\n"));
+            ConPrint(TR("\n  [!] TIP: Your primary display supports VRR. Enable VRR / FreeSync / G-SYNC for maximum smoothness.\n",
+                        "\n  [!] \xD0\xA1\xD0\x9E\xD0\x92\xD0\x95\xD0\xA2: \xD0\x92\xD0\xB0\xD1\x88 \xD1\x8D\xD0\xBA\xD1\x80\xD0\xB0\xD0\xBD \xD0\xBF\xD0\xBE\xD0\xB4\xD0\xB4\xD0\xB5\xD1\x80\xD0\xB6\xD0\xB8\xD0\xB2\xD0\xB0\xD0\xB5\xD1\x82 VRR. \xD0\x92\xD0\xBA\xD0\xBB\xD1\x8E\xD1\x87\xD0\xB8\xD1\x82\xD0\xB5 VRR / FreeSync / G-SYNC.\n"));
+            if (nvOff) {
+                ConPrint(TR("      NVIDIA App: System -> Displays -> G-SYNC (Enable for Windowed and Fullscreen)\n",
+                            "      NVIDIA App: \xD0\xA1\xD0\xB8\xD1\x81\xD1\x82\xD0\xB5\xD0\xBC\xD0\xB0 -> \xD0\x94\xD0\xB8\xD1\x81\xD0\xBF\xD0\xBB\xD0\xB5\xD0\xB8 -> G-SYNC (\xD0\xB4\xD0\xBB\xD1\x8F \xD0\xBE\xD0\xBA\xD0\xBD\xD0\xB0 \xD0\xB8 \xD0\xBF\xD0\xBE\xD0\xBB\xD0\xBD\xD0\xBE\xD0\xB3\xD0\xBE \xD1\x8D\xD0\xBA\xD1\x80\xD0\xB0\xD0\xBD\xD0\xB0)\n"));
+            } else if (amdOff || amdNeedManual) {
+                ConPrint(TR("      AMD Adrenalin: Gaming -> Display -> AMD FreeSync (Enabled)\n",
+                            "      AMD Adrenalin: \xD0\x98\xD0\xB3\xD1\x80\xD1\x8B -> \xD0\x94\xD0\xB8\xD1\x81\xD0\xBF\xD0\xBB\xD0\xB5\xD0\xB9 -> AMD FreeSync (\xD0\x92\xD0\xBA\xD0\xBB)\n"));
+            }
             SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
-            ConPrint(TR("  Enable recommended Windows/GPU VRR settings now? [Y/N]: ",
-                        "  \xD0\x92\xD0\xBA\xD0\xBB\xD1\x8E\xD1\x87\xD0\xB8\xD1\x82\xD1\x8C \xD1\x80\xD0\xB5\xD0\xBA\xD0\xBE\xD0\xBC\xD0\xB5\xD0\xBD\xD0\xB4\xD1\x83\xD0\xB5\xD0\xBC\xD1\x8B\xD0\xB5 \xD0\xBD\xD0\xB0\xD1\x81\xD1\x82\xD1\x80\xD0\xBE\xD0\xB9\xD0\xBA\xD0\xB8 VRR \xD1\x81\xD0\xB5\xD0\xB9\xD1\x87\xD0\xB0\xD1\x81? [Y (\xD0\x94\xD0\xB0) / N (\xD0\x9D\xD0\xB5\xD1\x82)]: "));
+            ConPrint(TR("  Enable recommended VRR settings now? [Y = Auto Enable / O = Open GPU App / N = Skip]: ",
+                        "  \xD0\x92\xD0\xBA\xD0\xBB\xD1\x8E\xD1\x87\xD0\xB8\xD1\x82\xD1\x8C VRR \xD1\x81\xD0\xB5\xD0\xB9\xD1\x87\xD0\xB0\xD1\x81? [Y = \xD0\x92\xD0\xBA\xD0\xBB\xD1\x8E\xD1\x87\xD0\xB8\xD1\x82\xD1\x8C / O = \xD0\x9E\xD1\x82\xD0\xBA\xD1\x80\xD1\x8B\xD1\x82\xD1\x8C GPU App / N = \xD0\x9F\xD1\x80\xD0\xBE\xD0\xBF\xD1\x83\xD1\x81\xD1\x82\xD0\xB8\xD1\x82\xD1\x8C]: "));
             std::string ans;
             if (std::getline(std::cin, ans)) {
-                std::string u = ToUpperAscii(Trim(ans));
-                if (!u.empty() && (u[0] == 'Y' || ans.find("\xD0\x94") != std::string::npos || ans.find("\xD0\xB4") != std::string::npos)) {
+                std::string t = Trim(ans);
+                std::string u = ToUpperAscii(t);
+                if (!u.empty() && (u[0] == 'Y' || t.find("\xD0\x94") == 0 || t.find("\xD0\xB4") == 0)) {
                     doEnable = true;
+                } else if (!u.empty() && (u[0] == 'O' || t.find("\xD0\x9E") == 0 || t.find("\xD0\xBE") == 0)) {
+                    openApp = true;
                 }
             }
         }
@@ -489,6 +797,17 @@ VrrAuditResult RunVrrPreflight(const ModConfig& cfg, bool nonInteractive, const 
             SetColor(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
             ConPrint(TR("  [+] VRR / FreeSync / G-SYNC optimizations applied!\n",
                         "  [+] \xD0\x9D\xD0\xB0\xD1\x81\xD1\x82\xD1\x80\xD0\xBE\xD0\xB9\xD0\xBA\xD0\xB8 VRR / FreeSync / G-SYNC \xD0\xBF\xD1\x80\xD0\xB8\xD0\xBC\xD0\xB5\xD0\xBD\xD0\xB5\xD0\xBD\xD1\x8B!\n"));
+            if ((nvOff && vr.nvVrrMode < 2u) || (amdOff && !vr.adlxFreeSyncEnabled) || amdNeedManual) {
+                SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+                ConPrint(TR("  [!] Note: Confirm per display G-SYNC / FreeSync is enabled in your GPU app if not yet active.\n",
+                            "  [!] \xD0\x9F\xD1\x80\xD0\xB8\xD0\xBC\xD0\xB5\xD1\x87\xD0\xB0\xD0\xBD\xD0\xB8\xD0\xB5: \xD0\xBF\xD1\x80\xD0\xBE\xD0\xB2\xD0\xB5\xD1\x80\xD1\x8C\xD1\x82\xD0\xB5 \xD0\xBF\xD0\xB5\xD1\x80\xD0\xB5\xD0\xBA\xD0\xBB\xD1\x8E\xD1\x87\xD0\xB0\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C G-SYNC / FreeSync \xD0\xB2 \xD0\xBF\xD1\x80\xD0\xB8\xD0\xBB\xD0\xBE\xD0\xB6\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB8 GPU.\n"));
+            }
+            SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+        } else if (openApp) {
+            OpenGpuControlPanel(primaryIsNvidia, primaryIsAmd);
+            SetColor(FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+            ConPrint(TR("  [+] Opened GPU display settings. Enable VRR / G-SYNC / FreeSync, then continue launching.\n",
+                        "  [+] \xD0\x9E\xD1\x82\xD0\xBA\xD1\x80\xD1\x8B\xD1\x82\xD1\x8B \xD0\xBD\xD0\xB0\xD1\x81\xD1\x82\xD1\x80\xD0\xBE\xD0\xB9\xD0\xBA\xD0\xB8 \xD0\xB4\xD0\xB8\xD1\x81\xD0\xBF\xD0\xBB\xD0\xB5\xD1\x8F GPU. \xD0\x92\xD0\xBA\xD0\xBB\xD1\x8E\xD1\x87\xD0\xB8\xD1\x82\xD0\xB5 VRR / G-SYNC / FreeSync.\n"));
             SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
         }
     }
