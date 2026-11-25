@@ -30,18 +30,36 @@ CR1M Pro Mod modifies `wotblitz.exe` in memory at runtime to fix frame pacing, c
    - Deduplicates redundant `SilhouetteSystem` material rebuild passes on spot and respot (`SilVisDup`, `SilAddDedup`, `SilAddTail`).
    - NOPs `CamouflageApplier::RemoveCamouflageFlags` / `RestoreCamouflageFlags` around `PreBuildMaterials` in `GameScene::PrecacheTankModel` so camouflaged shaders compile during battle load instead of stalling on first spot.
    - Live self heals deprecated `RemoveEntity` cache patches (`SilKeepCacheHeal`) to prevent tank destruction freezes.
-4. **Hardware Topology, VRR & OS Scheduling (`src/platform/vrr.cpp`, `src/engine/patcher_x86.cpp`):**
-   - Audits Windows DirectX VRR, DXGI Tearing, AMD FreeSync (via ADLX), and NVIDIA VRR / GSync (via NVAPI DRS), with automatic Hybrid Optimus and MSHybrid safety to prevent cross adapter DWM flip contention.
+4. **Hardware Topology, Display EDID VRR & OS Scheduling (`src/platform/vrr.cpp`, `src/engine/patcher_x86.cpp`):**
+   - Reads primary monitor EDID hardware VRR capabilities via `QueryDisplayConfig` (DisplayID 2.0 FreeSync, CTA 861 FreeSync VSDB, HDMI 2.1 VRR VSDB, and EDID 1.4 DisplayPort Adaptive Sync) so fixed refresh panels are never prompted unnecessarily.
+   - Audits Windows DirectX VRR, DXGI Tearing, AMD FreeSync (via ADLX), and NVIDIA VRR / GSync (via NVAPI DRS, catching both `OFF` and `FULLSCREEN ONLY` on VRR capable direct displays), with automatic Hybrid Optimus and MSHybrid safety and optional one key launch of NVIDIA App, NVIDIA Control Panel, or AMD Adrenalin.
    - Configures per EXE DirectX GPU preferences (`UserGpuPreferences`), disables GameDVR, disables Win11 power and timer throttling, and boosts game process and main render thread priority.
-5. **Client Verification & 15 Minute Free Test Drive (`src/auth/`):**
+5. **Client Verification, Signed OTA Updates & 15 Minute Free Test Drive (`src/auth/`):**
    - Uses an embedded RSA 2048 public key (zero private secrets in the client) to verify signed offline receipts bound to a BIOS update safe physical silicon fingerprint, with signed fail open status checks and a 15 minute Free Test Drive.
+   - Runs a zero latency background check against `GET https://cr1m.net/api/client/release` (RSA 2048 signed release manifest) so users can update in place with one keypress (`U` + `ENTER`, verified via PE64 header + Windows CNG SHA 256 + atomic `MoveFileExW` swap, zero shell scripts) whenever a new build drops.
+
+---
+
+## Update Log
+
+### v2.4.0 (2026 11 25)
+- **Three Tier Update Resilient Signature Engine:** Added hardened register tolerant Tier 1 AOBs, Tier 2 structural resolvers anchored on `KERNEL32!Sleep` IAT xrefs + `1000 / idiv`, call graphs, `.rdata` `0.0f` scans, and dynamic `x86` epilogue calculation, plus Tier 3 fail open RSA 2048 signed remote signature hotfix manifests with per architecture anti rollback caching.
+- **Full World of Tanks Blitz 11.22 Support Across All Three PC Editions:**
+  - **Microsoft Store (`x64` `11.22.235.0`):** Supported REX prefixed `idiv` (`41 F7 FE`) and shifted `cmovl` register allocation in both Tier 1 and Tier 2 `x64_LoopB` resolvers.
+  - **Steam (`x86` `11.22.0.1379`) & WGC (`x86` `11.22.0.30`):** Supported XMM register shifts on `UpdSnap1`/`UpdSnap3`, both 48 byte and 54 byte `xmm1` stack spilled `UpdRoundf` layouts (preserving pitch stack data and idempotent re attach), and dual site split `UpdRotSnap` + `UpdRotSnap2`.
+- **Zero Latency Signed OTA Self Updater:** Background release check runs in parallel with `[1/5]` and `[2/5]` (0 ms overhead when current), prompts `[U] Update Now / [ENTER] Skip` right before `[3/5]` for both Licensed and Test Drive users (and keeps `U` available at the end prompt), verifies RSA 2048 + exact byte length + PE64 + Windows CNG SHA 256, swaps atomically via native `MoveFileExW`, relaunches via `CreateProcessW` preserving CLI arguments, and retries `.old` cleanup cleanly on next start.
+- **Primary Monitor Hardware VRR / GSync / FreeSync Detection:** Added fast native `QueryDisplayConfig` + primary EDID VRR range detection (`Display VRR Cap`), suppressed prompts on fixed refresh displays, detected NVIDIA `FULLSCREEN ONLY` (`1`) vs `FULLSCREEN + WINDOWED` (`2`) on VRR capable direct displays, and added `[O]` shortcut to open NVIDIA App, NVIDIA Control Panel, or AMD Adrenalin.
+- **Interactive Client Switcher & Safeguards:** Replaced the static exit pause with an interactive client switcher (`Press ENTER to close or press a letter (M / S / W) to launch a different client`), added honest per subsystem status (`[SUCCESS]` / `[PARTIAL]` / `[FAILED]`) with a direct `cr1m.net` update link, and added a Free Test Drive partial guard that reverts hooks with 0 minutes consumed if core engine or pacer signatures mismatch.
+
+### v2.3
+- Published the modular 14 header / 15 source C++20 source available transparency mirror with Pure User Mode QPC frame pacing (`<= 154 FPS`), 1:1 linear mouse aim, tank spotting hitch reduction, Hybrid Optimus VRR preflight, and RSA 2048 offline receipt verification.
 
 ---
 
 ## Transparency, Network Activity & Antivirus Disclosure
 
 - **Exact Network Activity (2 HTTPS hosts only, zero telemetry or analytics):**
-  1. `https://cr1m.net` (`POST /api/license/activate`, `POST /api/license/status`, and optional `GET /api/client/sigs`): license activation, signed fail open revocation checks, and RSA 2048 signed signature hotfix manifests (queried only if a local signature misses after a game update) in `src/auth/license.cpp`.
+  1. `https://cr1m.net` (`POST /api/license/activate`, `POST /api/license/status`, `GET /api/client/release`, optional `GET /api/client/sigs`, and user confirmed official executable download under `/releases/`): license activation, signed fail open revocation checks, RSA 2048 signed OTA release discovery and binary download (only when the user explicitly presses `U`), and RSA 2048 signed signature hotfix manifests (queried only if a local signature misses after a game update) in `src/auth/license.cpp`.
   2. `https://www.microsoft.com` (`HEAD /` header `Date` read only): UTC clock tamper verification during the 15 minute Free Test Drive in `src/auth/trial.cpp`.
   - Zero background services, zero scheduled tasks, zero crash telemetry, and zero file or account uploads.
 - **Why Antivirus Heuristics May Flag This Mod:**
