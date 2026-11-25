@@ -1,4 +1,4 @@
-# CR1M Pro Mod v2.3 Configuration
+# CR1M Pro Mod v2.4 Configuration
 # TargetFPS: AUTO (recommended: adapts to monitor Hz, capped at engine 154 FPS) or 30..154
 TargetFPS=AUTO
 

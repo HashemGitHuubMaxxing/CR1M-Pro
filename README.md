@@ -41,14 +41,14 @@ CR1M Pro Mod modifies `wotblitz.exe` in memory at runtime to fix frame pacing, c
 ## Transparency, Network Activity & Antivirus Disclosure
 
 - **Exact Network Activity (2 HTTPS hosts only, zero telemetry or analytics):**
-  1. `https://cr1m.net` (`POST /api/license/activate` and `POST /api/license/status`): license activation and signed fail open revocation checks in `src/auth/license.cpp`.
+  1. `https://cr1m.net` (`POST /api/license/activate`, `POST /api/license/status`, and optional `GET /api/client/sigs`): license activation, signed fail open revocation checks, and RSA 2048 signed signature hotfix manifests (queried only if a local signature misses after a game update) in `src/auth/license.cpp`.
   2. `https://www.microsoft.com` (`HEAD /` header `Date` read only): UTC clock tamper verification during the 15 minute Free Test Drive in `src/auth/trial.cpp`.
   - Zero background services, zero scheduled tasks, zero crash telemetry, and zero file or account uploads.
 - **Why Antivirus Heuristics May Flag This Mod:**
   - `NtSuspendProcess` / `VirtualAllocEx` / `WriteProcessMemory` (`src/core/win_runtime.cpp`, `src/engine/aob.cpp`, `src/engine/pacer.cpp`): used strictly to pause `wotblitz.exe` for ~1 ms, write verified byte patches, and allocate the 4 KB QPC frame pacer cave.
   - `GetSystemFirmwareTable` / `DeviceIoControl` (`src/auth/hwid.cpp`): read only SMBIOS and disk serial queries used strictly to compute a local SHA256 hardware fingerprint for license binding and spoofer warnings.
 - **Windows Registry & Local State (Zero Startup or COM Persistence):**
-  - Performance tuning writes `HKCU\Software\Microsoft\DirectX\UserGpuPreferences` (GPU preference, Flip model, VRR) and `HKCU\System\GameConfigStore` (`GameDVR`), and stores user config, language, and license cache in `%APPDATA%\CR1M_Pro_Mod\`.
+  - Performance tuning writes `HKCU\Software\Microsoft\DirectX\UserGpuPreferences` (GPU preference, Flip model, VRR) and `HKCU\System\GameConfigStore` (`GameDVR`), and stores user config, language, signed signature cache, and license cache in `%APPDATA%\CR1M_Pro_Mod\`.
   - During the 15 minute Free Test Drive, `src/auth/trial.cpp` stores a 76 byte encrypted binary countdown record (`ConfigData` under a dedicated `CLSID` key plus hidden local cache files) solely to track trial elapsed time. **No `InprocServer32`, COM server, DLL hook, Run key, or startup persistence is ever created.**
 - **EULA Notice:** Although CR1M Pro Mod is strictly performance and bugfix oriented with zero cheat features, modifying game memory at runtime may conflict with Wargaming's EULA. Use at your own discretion.
 

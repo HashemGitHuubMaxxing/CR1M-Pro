@@ -250,14 +250,14 @@ bool HttpsPostJson(const std::wstring& host, const std::wstring& path,
     outHttpCode = 0;
     outRespBody.clear();
 
-    HINTERNET hSess = WinHttpOpen(L"CR1M-Pro-Mod/2.3", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+    HINTERNET hSess = WinHttpOpen(L"CR1M-Pro-Mod/2.4", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                                   WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSess) {
-        hSess = WinHttpOpen(L"CR1M-Pro-Mod/2.3", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+        hSess = WinHttpOpen(L"CR1M-Pro-Mod/2.4", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                             WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     }
     if (!hSess) {
-        hSess = WinHttpOpen(L"CR1M-Pro-Mod/2.3", WINHTTP_ACCESS_TYPE_NO_PROXY,
+        hSess = WinHttpOpen(L"CR1M-Pro-Mod/2.4", WINHTTP_ACCESS_TYPE_NO_PROXY,
                             WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     }
     if (!hSess) return false;
@@ -311,6 +311,139 @@ bool HttpsPostJson(const std::wstring& host, const std::wstring& path,
     }
     WinHttpCloseHandle(hSess);
     return ok;
+}
+
+bool HttpsGetText(const std::wstring& host, const std::wstring& path,
+                  DWORD connectMs, DWORD rwMs,
+                  DWORD& outHttpCode, std::string& outRespBody) {
+    outHttpCode = 0;
+    outRespBody.clear();
+
+    HINTERNET hSess = WinHttpOpen(L"CR1M-Pro-Mod/2.4", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                  WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!hSess) {
+        hSess = WinHttpOpen(L"CR1M-Pro-Mod/2.4", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                            WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    }
+    if (!hSess) {
+        hSess = WinHttpOpen(L"CR1M-Pro-Mod/2.4", WINHTTP_ACCESS_TYPE_NO_PROXY,
+                            WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    }
+    if (!hSess) return false;
+
+    WinHttpSetTimeouts(hSess, static_cast<int>(connectMs), static_cast<int>(connectMs),
+                       static_cast<int>(rwMs), static_cast<int>(rwMs));
+
+    bool ok = false;
+    HINTERNET hConn = WinHttpConnect(hSess, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (hConn) {
+        HINTERNET hReq = WinHttpOpenRequest(hConn, L"GET", path.c_str(), NULL, WINHTTP_NO_REFERER,
+                                            WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+        if (hReq) {
+            std::wstring hdrs = L"Accept: application/json\r\n";
+            BOOL sent = WinHttpSendRequest(hReq, hdrs.c_str(), static_cast<DWORD>(hdrs.size()),
+                                           WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+            if (sent && WinHttpReceiveResponse(hReq, NULL)) {
+                DWORD code = 0, codeLen = sizeof(code);
+                if (WinHttpQueryHeaders(hReq, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                                        NULL, &code, &codeLen, NULL)) {
+                    outHttpCode = code;
+                    bool readOk = true;
+                    while (outRespBody.size() < 16384) {
+                        DWORD avail = 0;
+                        if (!WinHttpQueryDataAvailable(hReq, &avail)) { readOk = false; break; }
+                        if (avail == 0) break;
+                        size_t room = 16384 - outRespBody.size();
+                        DWORD want = (avail > room) ? static_cast<DWORD>(room) : avail;
+                        size_t prev = outRespBody.size();
+                        outRespBody.resize(prev + want);
+                        DWORD got = 0;
+                        if (!WinHttpReadData(hReq, &outRespBody[prev], want, &got)) {
+                            outRespBody.resize(prev);
+                            readOk = false;
+                            break;
+                        }
+                        outRespBody.resize(prev + got);
+                        if (got == 0) break;
+                    }
+                    ok = readOk;
+                    if (!readOk) {
+                        outRespBody.clear();
+                        outHttpCode = 0;
+                    }
+                }
+            }
+            WinHttpCloseHandle(hReq);
+        }
+        WinHttpCloseHandle(hConn);
+    }
+    WinHttpCloseHandle(hSess);
+    return ok;
+}
+
+bool LoadOrFetchSignedSigManifest(bool is64, bool allowNetwork, SignedSigManifest& outManifest) {
+    outManifest = SignedSigManifest{};
+    std::string dir = GetAppDataBaseDir();
+    std::string cachePath = dir + (is64 ? "\\sigs_cache_x64.dat" : "\\sigs_cache_x86.dat");
+
+    SignedSigManifest cached{};
+    bool hasCached = false;
+    {
+        std::string raw;
+        if (ReadFileUtf8W(Utf8ToWide(cachePath), raw) && raw.size() > 520 && raw.size() <= 17408) {
+            size_t nl = raw.find('\n');
+            if (nl == 512) {
+                std::string sigHex = raw.substr(0, 512);
+                std::string payload = raw.substr(513);
+                if (VerifyRsaSha256WithEmbeddedPub(payload, sigHex, nullptr) &&
+                    ParseSignedSigManifestPayload(payload, is64, cached)) {
+                    cached.sigHex = sigHex;
+                    hasCached = true;
+                }
+            }
+        }
+    }
+
+    if (!allowNetwork) {
+        if (hasCached) {
+            outManifest = std::move(cached);
+            return true;
+        }
+        return false;
+    }
+
+    std::wstring host = CR1M_API_HOST_W;
+    std::wstring path = is64 ? L"/api/client/sigs?arch=x64" : L"/api/client/sigs?arch=x86";
+    DWORD httpCode = 0;
+    std::string resp;
+    bool gotHttp = HttpsGetText(host, path, 1500, 2500, httpCode, resp);
+    if (gotHttp && httpCode == 200) {
+        bool apiOk = false;
+        std::string proto, sigAlg, payload, sigHex;
+        SignedSigManifest fresh{};
+        if (JsonExtractBoolField(resp, "ok", apiOk) && apiOk &&
+            JsonExtractStringField(resp, "protocol", proto) && proto == "CR1M-SIGS-V1" &&
+            JsonExtractStringField(resp, "signatureAlg", sigAlg) && sigAlg == "rsa-sha256" &&
+            JsonExtractStringField(resp, "payload", payload) &&
+            JsonExtractStringField(resp, "signature", sigHex) &&
+            VerifyRsaSha256WithEmbeddedPub(payload, sigHex, nullptr) &&
+            ParseSignedSigManifestPayload(payload, is64, fresh)) {
+            if (!hasCached || fresh.version >= cached.version) {
+                fresh.sigHex = sigHex;
+                if (!hasCached || fresh.version > cached.version || fresh.rawPayload != cached.rawPayload) {
+                    SaveLicenseKeyAtomic(dir, cachePath, sigHex + "\n" + payload);
+                }
+                outManifest = std::move(fresh);
+                return true;
+            }
+        }
+    }
+
+    if (hasCached) {
+        outManifest = std::move(cached);
+        return true;
+    }
+    return false;
 }
 
 bool VerifyRsaSha256WithEmbeddedPub(const std::string& payload,

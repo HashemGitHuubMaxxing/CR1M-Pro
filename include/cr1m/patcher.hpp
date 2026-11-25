@@ -12,15 +12,21 @@
 
 namespace cr1m {
 
+using SigManifestProvider = bool (*)(bool is64, bool allowNetwork, SignedSigManifest& outManifest);
+
 void ApplySystemPerformanceOptimizations(HANDLE hProc, DWORD pid, ModSessionState* sess = nullptr);
 void RevertModEffects(ModSessionState& sess);
 
 bool ApplyPatchesX64(HANDLE hp, uintptr_t base, const std::vector<uint8_t>& txt, uint32_t txtRva,
-                     const Kernel32Iat& iat, uint32_t targetFps, int& okCount, int& failCount,
-                     const AuthProof& proof, ModSessionState* sess = nullptr);
+                     const Kernel32Iat& iat, uint32_t targetFps, PatchReport& report,
+                     const AuthProof& proof, ModSessionState* sess = nullptr,
+                     const RdataSlice* rdata = nullptr,
+                     SigManifestProvider manifestProvider = nullptr);
 
 bool ApplyPatchesX86(HANDLE hp, uintptr_t base, const std::vector<uint8_t>& txt, uint32_t txtRva,
-                     const Kernel32Iat& iat, uint32_t targetFps, int& okCount, int& failCount,
-                     const AuthProof& proof, ModSessionState* sess = nullptr);
+                     const Kernel32Iat& iat, uint32_t targetFps, PatchReport& report,
+                     const AuthProof& proof, ModSessionState* sess = nullptr,
+                     const RdataSlice* rdata = nullptr,
+                     SigManifestProvider manifestProvider = nullptr);
 
 } // namespace cr1m

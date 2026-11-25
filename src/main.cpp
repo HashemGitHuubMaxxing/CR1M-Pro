@@ -148,12 +148,14 @@ int main(int argc, char* argv[]) {
     HANDLE hProc = NULL;
     uintptr_t baseAddr = 0;
     bool is64 = true;
-    uint32_t textRva = 0, textSz = 0, impRva = 0, impSz = 0;
+    uint32_t textRva = 0, textSz = 0, rdataRva = 0, rdataSz = 0, impRva = 0, impSz = 0;
     ModSessionState sess{};
     std::vector<uint8_t> txtBuf;
+    RdataSlice rdata{};
     Kernel32Iat iat{};
-    int okCount = 0, failCount = 0;
+    PatchReport report{};
     bool allOk = false;
+    bool trialGuardAborted = false;
     DWORD ignorePid = 0;
     std::string pidStoreFilter = selectedStore.empty() ? std::string("AUTO") : selectedStore;
 
@@ -166,8 +168,14 @@ int main(int argc, char* argv[]) {
         is64 = true;
         textRva = 0;
         textSz = 0;
+        rdataRva = 0;
+        rdataSz = 0;
         impRva = 0;
         impSz = 0;
+        rdata = RdataSlice{};
+        report = PatchReport{};
+        allOk = false;
+        trialGuardAborted = false;
         DWORD lastOpenErr = 0;
         int accessDeniedStreak = 0;
 
@@ -222,16 +230,20 @@ int main(int argc, char* argv[]) {
                                         impSz  = opt32.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
                                     }
                                     IMAGE_SECTION_HEADER chosenSec{};
+                                    bool foundText = false;
                                     WORD maxSecs = std::min<WORD>(fh.NumberOfSections, 16);
                                     for (WORD s = 0; s < maxSecs; ++s) {
                                         IMAGE_SECTION_HEADER sec{};
                                         if (!ReadMem(hProc, baseAddr + secOff + s * sizeof(IMAGE_SECTION_HEADER), &sec, sizeof(sec))) {
                                             break;
                                         }
-                                        if (s == 0) chosenSec = sec;
+                                        if (s == 0 && !foundText) chosenSec = sec;
                                         if (std::strncmp(reinterpret_cast<const char*>(sec.Name), ".text", 5) == 0) {
                                             chosenSec = sec;
-                                            break;
+                                            foundText = true;
+                                        } else if (std::strncmp(reinterpret_cast<const char*>(sec.Name), ".rdata", 6) == 0) {
+                                            rdataRva = sec.VirtualAddress;
+                                            rdataSz  = is64 ? sec.Misc.VirtualSize : sec.SizeOfRawData;
                                         }
                                     }
                                     textRva = chosenSec.VirtualAddress;
@@ -288,8 +300,7 @@ int main(int argc, char* argv[]) {
                      : TR("32-bit (Steam/WGC)", "32-\xD0\xB1\xD0\xB8\xD1\x82 (Steam/WGC)")) +
                  TR(" modules...\n", " \xD0\xBC\xD0\xBE\xD0\xB4\xD1\x83\xD0\xBB\xD0\xB5\xD0\xB9...\n"));
 
-        okCount = 0;
-        failCount = 0;
+        report = PatchReport{};
         ApplySystemPerformanceOptimizations(hProc, pid, &sess);
 
         txtBuf.assign(textSz, 0);
@@ -302,34 +313,108 @@ int main(int argc, char* argv[]) {
             timeEndPeriod(1);
             return 1;
         }
+        rdata = RdataSlice{};
+        if (rdataRva && rdataSz > 0 && rdataSz <= 32u * 1024u * 1024u) {
+            rdata.rva = rdataRva;
+            rdata.bytes.assign(rdataSz, 0);
+            SIZE_T rbr = 0;
+            if (!runtime::DynReadProcessMemory(hProc, reinterpret_cast<LPCVOID>(baseAddr + rdataRva),
+                                               rdata.bytes.data(), rdataSz, &rbr) ||
+                rbr < rdataSz / 2) {
+                rdata = RdataSlice{};
+            }
+        }
         iat = ResolveKernel32Iat(hProc, baseAddr, is64, impRva, impSz);
 
+        const RdataSlice* rdataPtr = rdata.bytes.empty() ? nullptr : &rdata;
         allOk = is64
             ? ApplyPatchesX64(hProc, baseAddr, txtBuf, textRva, iat,
-                              static_cast<uint32_t>(targetFps), okCount, failCount, *proof, &sess)
+                              static_cast<uint32_t>(targetFps), report, *proof, &sess, rdataPtr, &LoadOrFetchSignedSigManifest)
             : ApplyPatchesX86(hProc, baseAddr, txtBuf, textRva, iat,
-                              static_cast<uint32_t>(targetFps), okCount, failCount, *proof, &sess);
+                              static_cast<uint32_t>(targetFps), report, *proof, &sess, rdataPtr, &LoadOrFetchSignedSigManifest);
 
-        if (allOk && failCount == 0) {
+        // Safeguard: never consume Free Test Drive minutes if core FPS or Frame Pacer failed
+        if (auth.trialActive && (!report.fpsCoreOk || !report.pacerOk)) {
+            RevertModEffects(sess);
+            trialGuardAborted = true;
+            SetColor(FOREGROUND_RED | FOREGROUND_INTENSITY);
+            ConPrint(TR("\n  [FAILED] This game update changed core engine signatures; Test Drive paused safely.\n",
+                        "\n  [\xD0\x9E\xD0\xA8\xD0\x98\xD0\x91\xD0\x9A\xD0\x90] \xD0\x9E\xD0\xB1\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5 \xD0\xB8\xD0\xB3\xD1\x80\xD1\x8B \xD0\xB8\xD0\xB7\xD0\xBC\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xBB\xD0\xBE \xD1\x81\xD0\xB8\xD0\xB3\xD0\xBD\xD0\xB0\xD1\x82\xD1\x83\xD1\x80\xD1\x8B \xD0\xB4\xD0\xB2\xD0\xB8\xD0\xB6\xD0\xBA\xD0\xB0; \xD1\x82\xD0\xB5\xD1\x81\xD1\x82 \xD0\xB1\xD0\xB5\xD0\xB7\xD0\xBE\xD0\xBF\xD0\xB0\xD1\x81\xD0\xBD\xD0\xBE \xD0\xBE\xD1\x81\xD1\x82\xD0\xB0\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD.\n"));
+            SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+            ConPrint(TR("  -> Trial Protection    : All temporary hooks reverted (0 minutes used).\n",
+                        "  -> \xD0\x97\xD0\xB0\xD1\x89\xD0\xB8\xD1\x82\xD0\xB0 \xD1\x82\xD1\x80\xD0\xB8\xD0\xB0\xD0\xBB\xD0\xB0      : \xD0\x92\xD1\x81\xD0\xB5 \xD0\xB2\xD1\x80\xD0\xB5\xD0\xBC\xD0\xB5\xD0\xBD\xD0\xBD\xD1\x8B\xD0\xB5 \xD0\xBF\xD0\xB0\xD1\x82\xD1\x87\xD0\xB8 \xD0\xBE\xD1\x82\xD0\xBC\xD0\xB5\xD0\xBD\xD0\xB5\xD0\xBD\xD1\x8B (0 \xD0\xBC\xD0\xB8\xD0\xBD\xD1\x83\xD1\x82 \xD0\xBF\xD0\xBE\xD1\x82\xD1\x80\xD0\xB0\xD1\x87\xD0\xB5\xD0\xBD\xD0\xBE).\n"));
+            SetColor(FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+            if (!report.newerVersionAvailable.empty()) {
+                ConPrint(TR("  -> Update Available    : CR1M Pro Mod v",
+                            "  -> \xD0\x94\xD0\xBE\xD1\x81\xD1\x82\xD1\x83\xD0\xBF\xD0\xBD\xD0\xBE \xD0\xBE\xD0\xB1\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5 : CR1M Pro Mod v") +
+                         report.newerVersionAvailable + "\n");
+            }
+            ConPrint(TR("  -> Check for updates   : https://cr1m.net/test-drive\n\n",
+                        "  -> \xD0\x9F\xD1\x80\xD0\xBE\xD0\xB2\xD0\xB5\xD1\x80\xD0\xB8\xD1\x82\xD1\x8C \xD0\xBE\xD0\xB1\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xB8\xD1\x8F : https://cr1m.net/test-drive\n\n"));
+            SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+            break;
+        }
+
+        if (allOk && report.failCount == 0) {
             SetColor(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
             ConPrint(TR("\n  [SUCCESS] All Engine, Frame Pacing, 1:1 Aim & Spotting optimizations active!\n",
                         "\n  [\xD0\xA3\xD0\xA1\xD0\x9F\xD0\x95\xD0\xA5] \xD0\x92\xD1\x81\xD0\xB5 \xD0\xBE\xD0\xBF\xD1\x82\xD0\xB8\xD0\xBC\xD0\xB8\xD0\xB7\xD0\xB0\xD1\x86\xD0\xB8\xD0\xB8 \xD0\xB4\xD0\xB2\xD0\xB8\xD0\xB6\xD0\xBA\xD0\xB0, \xD1\x84\xD1\x80\xD0\xB5\xD0\xB9\xD0\xBC\xD0\xBF\xD0\xB5\xD0\xB9\xD1\x81\xD0\xB8\xD0\xBD\xD0\xB3\xD0\xB0, \xD0\xB0\xD0\xB8\xD0\xBC\xD0\xB0 1:1 \xD0\xB8 \xD0\xB7\xD0\xB0\xD1\x81\xD0\xB2\xD0\xB5\xD1\x82\xD0\xB0 \xD0\xB0\xD0\xBA\xD1\x82\xD0\xB8\xD0\xB2\xD0\xBD\xD1\x8B!\n"));
-        } else {
+        } else if (report.okCount > 0) {
             SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-            ConPrint(TR("\n  [PARTIAL] Core optimizations active; some modules skipped on this game build.\n",
-                        "\n  [\xD0\xA7\xD0\x90\xD0\xA1\xD0\xA2\xD0\x98\xD0\xA7\xD0\x9D\xD0\x9E] \xD0\x9E\xD1\x81\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBD\xD1\x8B\xD0\xB5 \xD0\xBE\xD0\xBF\xD1\x82\xD0\xB8\xD0\xBC\xD0\xB8\xD0\xB7\xD0\xB0\xD1\x86\xD0\xB8\xD0\xB8 \xD0\xB0\xD0\xBA\xD1\x82\xD0\xB8\xD0\xB2\xD0\xBD\xD1\x8B; \xD1\x87\xD0\xB0\xD1\x81\xD1\x82\xD1\x8C \xD0\xBC\xD0\xBE\xD0\xB4\xD1\x83\xD0\xBB\xD0\xB5\xD0\xB9 \xD0\xBF\xD1\x80\xD0\xBE\xD0\xBF\xD1\x83\xD1\x89\xD0\xB5\xD0\xBD\xD0\xB0 \xD0\xB4\xD0\xBB\xD1\x8F \xD1\x8D\xD1\x82\xD0\xBE\xD0\xB9 \xD0\xB2\xD0\xB5\xD1\x80\xD1\x81\xD0\xB8\xD0\xB8 \xD0\xB8\xD0\xB3\xD1\x80\xD1\x8B.\n"));
+            ConPrint(TR("\n  [PARTIAL] Some optimization modules were skipped on this game build.\n",
+                        "\n  [\xD0\xA7\xD0\x90\xD0\xA1\xD0\xA2\xD0\x98\xD0\xA7\xD0\x9D\xD0\x9E] \xD0\xA7\xD0\xB0\xD1\x81\xD1\x82\xD1\x8C \xD0\xBC\xD0\xBE\xD0\xB4\xD1\x83\xD0\xBB\xD0\xB5\xD0\xB9 \xD0\xBE\xD0\xBF\xD1\x82\xD0\xB8\xD0\xBC\xD0\xB8\xD0\xB7\xD0\xB0\xD1\x86\xD0\xB8\xD0\xB8 \xD0\xBF\xD1\x80\xD0\xBE\xD0\xBF\xD1\x83\xD1\x89\xD0\xB5\xD0\xBD\xD0\xB0 \xD0\xB4\xD0\xBB\xD1\x8F \xD1\x8D\xD1\x82\xD0\xBE\xD0\xB9 \xD0\xB2\xD0\xB5\xD1\x80\xD1\x81\xD0\xB8\xD0\xB8 \xD0\xB8\xD0\xB3\xD1\x80\xD1\x8B.\n"));
+        } else {
+            SetColor(FOREGROUND_RED | FOREGROUND_INTENSITY);
+            ConPrint(TR("\n  [FAILED] Game engine updated and signatures did not match this build.\n",
+                        "\n  [\xD0\x9E\xD0\xA8\xD0\x98\xD0\x91\xD0\x9A\xD0\x90] \xD0\x98\xD0\xB3\xD1\x80\xD0\xB0 \xD0\xBE\xD0\xB1\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xB8\xD0\xBB\xD0\xB0\xD1\x81\xD1\x8C, \xD0\xB8 \xD1\x81\xD0\xB8\xD0\xB3\xD0\xBD\xD0\xB0\xD1\x82\xD1\x83\xD1\x80\xD1\x8B \xD0\xBD\xD0\xB5 \xD1\x81\xD0\xBE\xD0\xB2\xD0\xBF\xD0\xB0\xD0\xBB\xD0\xB8 \xD1\x81 \xD1\x8D\xD1\x82\xD0\xBE\xD0\xB9 \xD1\x81\xD0\xB1\xD0\xBE\xD1\x80\xD0\xBA\xD0\xBE\xD0\xB9.\n"));
         }
         ConPrint(TR("  -> Client Edition      : ", "  -> \xD0\x92\xD0\xB5\xD1\x80\xD1\x81\xD0\xB8\xD1\x8F \xD0\xBA\xD0\xBB\xD0\xB8\xD0\xB5\xD0\xBD\xD1\x82\xD0\xB0      : ") +
                  launchedStore + " (" + (is64 ? std::string("x64") : std::string("x86 WOW64")) +
                  ", PID " + std::to_string(pid) + ")\n");
-        ConPrint(TR("  -> Target Framerate    : ", "  -> \xD0\xA6\xD0\xB5\xD0\xBB\xD0\xB5\xD0\xB2\xD0\xBE\xD0\xB9 FPS         : ") +
-                 std::to_string(targetFps) +
-                 TR(" FPS (Precision Frame Pacer)\n",
-                    " FPS (\xD1\x82\xD0\xBE\xD1\x87\xD0\xBD\xD1\x8B\xD0\xB9 \xD0\xBF\xD0\xB5\xD0\xB9\xD1\x81\xD0\xB5\xD1\x80 \xD0\xBA\xD0\xB0\xD0\xB4\xD1\x80\xD0\xBE\xD0\xB2)\n"));
-        ConPrint(TR("  -> Precision Mouse Aim : 1:1 Linear Response Active\n",
-                    "  -> \xD0\xA2\xD0\xBE\xD1\x87\xD0\xBD\xD0\xBE\xD1\x81\xD1\x82\xD1\x8C \xD0\xBC\xD1\x8B\xD1\x88\xD0\xB8 1:1   : \xD0\x9B\xD0\xB8\xD0\xBD\xD0\xB5\xD0\xB9\xD0\xBD\xD1\x8B\xD0\xB9 \xD0\xBE\xD1\x82\xD0\xBA\xD0\xBB\xD0\xB8\xD0\xBA 1:1 \xD0\xB0\xD0\xBA\xD1\x82\xD0\xB8\xD0\xB2\xD0\xB5\xD0\xBD\n"));
-        ConPrint(TR("  -> Spotting Smoothness : Active (Stutter Reduction)\n\n",
-                    "  -> \xD0\x9F\xD0\xBB\xD0\xB0\xD0\xB2\xD0\xBD\xD0\xBE\xD1\x81\xD1\x82\xD1\x8C \xD0\xB7\xD0\xB0\xD1\x81\xD0\xB2\xD0\xB5\xD1\x82\xD0\xB0   : \xD0\x90\xD0\xBA\xD1\x82\xD0\xB8\xD0\xB2\xD0\xBD\xD0\xB0 (\xD1\x83\xD1\x81\xD1\x82\xD1\x80\xD0\xB0\xD0\xBD\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5 \xD0\xBC\xD0\xB8\xD0\xBA\xD1\x80\xD0\xBE\xD1\x84\xD1\x80\xD0\xB8\xD0\xB7\xD0\xBE\xD0\xB2)\n\n"));
+        if (report.fpsCoreOk && report.pacerOk) {
+            ConPrint(TR("  -> Target Framerate    : ", "  -> \xD0\xA6\xD0\xB5\xD0\xBB\xD0\xB5\xD0\xB2\xD0\xBE\xD0\xB9 FPS         : ") +
+                     std::to_string(targetFps) +
+                     TR(" FPS (Precision Frame Pacer)\n",
+                        " FPS (\xD1\x82\xD0\xBE\xD1\x87\xD0\xBD\xD1\x8B\xD0\xB9 \xD0\xBF\xD0\xB5\xD0\xB9\xD1\x81\xD0\xB5\xD1\x80 \xD0\xBA\xD0\xB0\xD0\xB4\xD1\x80\xD0\xBE\xD0\xB2)\n"));
+        } else if (report.fpsCoreOk) {
+            ConPrint(TR("  -> Target Framerate    : ", "  -> \xD0\xA6\xD0\xB5\xD0\xBB\xD0\xB5\xD0\xB2\xD0\xBE\xD0\xB9 FPS         : ") +
+                     std::to_string(targetFps) +
+                     TR(" FPS (Cap Unlocked; Frame Pacer Skipped)\n",
+                        " FPS (\xD0\xBB\xD0\xB8\xD0\xBC\xD0\xB8\xD1\x82 \xD1\x81\xD0\xBD\xD1\x8F\xD1\x82; \xD0\xBF\xD0\xB5\xD0\xB9\xD1\x81\xD0\xB5\xD1\x80 \xD0\xBF\xD1\x80\xD0\xBE\xD0\xBF\xD1\x83\xD1\x89\xD0\xB5\xD0\xBD)\n"));
+        } else {
+            ConPrint(TR("  -> Target Framerate    : Skipped on this game build\n",
+                        "  -> \xD0\xA6\xD0\xB5\xD0\xBB\xD0\xB5\xD0\xB2\xD0\xBE\xD0\xB9 FPS         : \xD0\x9F\xD1\x80\xD0\xBE\xD0\xBF\xD1\x83\xD1\x89\xD0\xB5\xD0\xBD \xD0\xB4\xD0\xBB\xD1\x8F \xD1\x8D\xD1\x82\xD0\xBE\xD0\xB9 \xD0\xB2\xD0\xB5\xD1\x80\xD1\x81\xD0\xB8\xD0\xB8 \xD0\xB8\xD0\xB3\xD1\x80\xD1\x8B\n"));
+        }
+        if (report.aimOk) {
+            ConPrint(TR("  -> Precision Mouse Aim : 1:1 Linear Response Active\n",
+                        "  -> \xD0\xA2\xD0\xBE\xD1\x87\xD0\xBD\xD0\xBE\xD1\x81\xD1\x82\xD1\x8C \xD0\xBC\xD1\x8B\xD1\x88\xD0\xB8 1:1   : \xD0\x9B\xD0\xB8\xD0\xBD\xD0\xB5\xD0\xB9\xD0\xBD\xD1\x8B\xD0\xB9 \xD0\xBE\xD1\x82\xD0\xBA\xD0\xBB\xD0\xB8\xD0\xBA 1:1 \xD0\xB0\xD0\xBA\xD1\x82\xD0\xB8\xD0\xB2\xD0\xB5\xD0\xBD\n"));
+        } else {
+            ConPrint(TR("  -> Precision Mouse Aim : Skipped on this game build\n",
+                        "  -> \xD0\xA2\xD0\xBE\xD1\x87\xD0\xBD\xD0\xBE\xD1\x81\xD1\x82\xD1\x8C \xD0\xBC\xD1\x8B\xD1\x88\xD0\xB8 1:1   : \xD0\x9F\xD1\x80\xD0\xBE\xD0\xBF\xD1\x83\xD1\x89\xD0\xB5\xD0\xBD\xD0\xB0 \xD0\xB4\xD0\xBB\xD1\x8F \xD1\x8D\xD1\x82\xD0\xBE\xD0\xB9 \xD0\xB2\xD0\xB5\xD1\x80\xD1\x81\xD0\xB8\xD0\xB8 \xD0\xB8\xD0\xB3\xD1\x80\xD1\x8B\n"));
+        }
+        if (report.spottingOk) {
+            ConPrint(TR("  -> Spotting Smoothness : Active (Stutter Reduction)\n",
+                        "  -> \xD0\x9F\xD0\xBB\xD0\xB0\xD0\xB2\xD0\xBD\xD0\xBE\xD1\x81\xD1\x82\xD1\x8C \xD0\xB7\xD0\xB0\xD1\x81\xD0\xB2\xD0\xB5\xD1\x82\xD0\xB0   : \xD0\x90\xD0\xBA\xD1\x82\xD0\xB8\xD0\xB2\xD0\xBD\xD0\xB0 (\xD1\x83\xD1\x81\xD1\x82\xD1\x80\xD0\xB0\xD0\xBD\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5 \xD0\xBC\xD0\xB8\xD0\xBA\xD1\x80\xD0\xBE\xD1\x84\xD1\x80\xD0\xB8\xD0\xB7\xD0\xBE\xD0\xB2)\n"));
+        } else {
+            ConPrint(TR("  -> Spotting Smoothness : Skipped on this game build\n",
+                        "  -> \xD0\x9F\xD0\xBB\xD0\xB0\xD0\xB2\xD0\xBD\xD0\xBE\xD1\x81\xD1\x82\xD1\x8C \xD0\xB7\xD0\xB0\xD1\x81\xD0\xB2\xD0\xB5\xD1\x82\xD0\xB0   : \xD0\x9F\xD1\x80\xD0\xBE\xD0\xBF\xD1\x83\xD1\x89\xD0\xB5\xD0\xBD\xD0\xB0 \xD0\xB4\xD0\xBB\xD1\x8F \xD1\x8D\xD1\x82\xD0\xBE\xD0\xB9 \xD0\xB2\xD0\xB5\xD1\x80\xD1\x81\xD0\xB8\xD0\xB8 \xD0\xB8\xD0\xB3\xD1\x80\xD1\x8B\n"));
+        }
+        if (report.usedRemoteHotfix) {
+            SetColor(FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+            ConPrint(TR("  -> Signature Hotfix    : Signed cr1m.net update applied automatically\n",
+                        "  -> \xD0\xA5\xD0\xBE\xD1\x82\xD1\x84\xD0\xB8\xD0\xBA\xD1\x81 \xD1\x81\xD0\xB8\xD0\xB3\xD0\xBD\xD0\xB0\xD1\x82\xD1\x83\xD1\x80   : \xD0\x9F\xD0\xBE\xD0\xB4\xD0\xBF\xD0\xB8\xD1\x81\xD0\xB0\xD0\xBD\xD0\xBD\xD0\xBE\xD0\xB5 \xD0\xBE\xD0\xB1\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5 cr1m.net \xD0\xBF\xD1\x80\xD0\xB8\xD0\xBC\xD0\xB5\xD0\xBD\xD0\xB5\xD0\xBD\xD0\xBE\n"));
+        }
+        if (!allOk || report.failCount > 0 || !report.newerVersionAvailable.empty()) {
+            SetColor(FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+            if (!report.newerVersionAvailable.empty()) {
+                ConPrint(TR("  -> Update Available    : CR1M Pro Mod v",
+                            "  -> \xD0\x94\xD0\xBE\xD1\x81\xD1\x82\xD1\x83\xD0\xBF\xD0\xBD\xD0\xBE \xD0\xBE\xD0\xB1\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5 : CR1M Pro Mod v") +
+                         report.newerVersionAvailable + "\n");
+            }
+            ConPrint(TR("  -> Check for updates   : https://cr1m.net/test-drive\n",
+                        "  -> \xD0\x9F\xD1\x80\xD0\xBE\xD0\xB2\xD0\xB5\xD1\x80\xD0\xB8\xD1\x82\xD1\x8C \xD0\xBE\xD0\xB1\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xB8\xD1\x8F : https://cr1m.net/test-drive\n"));
+        }
+        ConPrint("\n");
         SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
 
         // Steam only attach safeguard: never runs for WGC, MS Store, fresh Steam launch, or already modded Steam
@@ -364,9 +449,10 @@ int main(int argc, char* argv[]) {
         break;
     }
 
-    if (auth.trialActive) {
+    if (auth.trialActive && !trialGuardAborted) {
+        const RdataSlice* rdataPtr = rdata.bytes.empty() ? nullptr : &rdata;
         RunLiveTrialWatchdog(auth, sess, *proof, txtBuf, textRva, iat,
-                             static_cast<uint32_t>(targetFps), nonInteractive);
+                             static_cast<uint32_t>(targetFps), nonInteractive, rdataPtr);
     }
 
     proof->revoke();
@@ -378,5 +464,5 @@ int main(int argc, char* argv[]) {
         std::string tmp;
         std::getline(std::cin, tmp);
     }
-    return (allOk && failCount == 0) ? 0 : 2;
+    return (!trialGuardAborted && allOk && report.failCount == 0) ? 0 : 2;
 }

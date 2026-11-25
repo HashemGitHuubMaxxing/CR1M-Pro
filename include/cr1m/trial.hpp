@@ -63,6 +63,7 @@ void RunLiveTrialWatchdog(AuthSession& auth,
                           uint32_t textRva,
                           const Kernel32Iat& iat,
                           uint32_t targetFps,
-                          bool nonInteractive);
+                          bool nonInteractive,
+                          const RdataSlice* rdata = nullptr);
 
 } // namespace cr1m

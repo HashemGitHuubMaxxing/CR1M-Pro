@@ -83,7 +83,8 @@ void RunLiveTrialWatchdog(AuthSession& auth,
                           uint32_t textRva,
                           const Kernel32Iat& iat,
                           uint32_t targetFps,
-                          bool nonInteractive) {
+                          bool nonInteractive,
+                          const RdataSlice* rdata) {
     LARGE_INTEGER leaseQf{};
     QueryPerformanceFrequency(&leaseQf);
     uint64_t qpcFreq = (leaseQf.QuadPart > 0) ? static_cast<uint64_t>(leaseQf.QuadPart) : 1ULL;
@@ -413,12 +414,20 @@ void RunLiveTrialWatchdog(AuthSession& auth,
                                         "  [OK] \xD0\x91\xD0\xB5\xD0\xB7\xD0\xBB\xD0\xB8\xD0\xBC\xD0\xB8\xD1\x82\xD0\xBD\xD0\xB0\xD1\x8F \xD0\xBB\xD0\xB8\xD1\x86\xD0\xB5\xD0\xBD\xD0\xB7\xD0\xB8\xD1\x8F \xD0\xB0\xD0\xBA\xD1\x82\xD0\xB8\xD0\xB2\xD0\xB8\xD1\x80\xD0\xBE\xD0\xB2\xD0\xB0\xD0\xBD\xD0\xB0 \xD0\xBD\xD0\xB0 \xD0\xBB\xD0\xB5\xD1\x82\xD1\x83 (\xD0\xB1\xD0\xB5\xD0\xB7 \xD1\x80\xD0\xB0\xD0\xB7\xD1\x80\xD1\x8B\xD0\xB2\xD0\xB0 \xD0\xBA\xD0\xB0\xD0\xB4\xD1\x80\xD0\xBE\xD0\xB2).\n"));
                         } else {
                             ApplySystemPerformanceOptimizations(sess.hProc, sess.pid, &sess);
-                            int ok2 = 0, fail2 = 0;
+                            PatchReport rep2{};
                             bool reok = sess.is64
-                                ? ApplyPatchesX64(sess.hProc, sess.baseAddr, txtBuf, textRva, iat, targetFps, ok2, fail2, proof, &sess)
-                                : ApplyPatchesX86(sess.hProc, sess.baseAddr, txtBuf, textRva, iat, targetFps, ok2, fail2, proof, &sess);
-                            ConPrint(TR("  [OK] Live Re-Apply: ", "  [OK] \xD0\x9F\xD0\xBE\xD0\xB2\xD1\x82\xD0\xBE\xD1\x80\xD0\xBD\xD0\xBE\xD0\xB5 \xD0\xBF\xD1\x80\xD0\xB8\xD0\xBC\xD0\xB5\xD0\xBD\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5: ") +
-                                     (reok ? TR("SUCCESS", "\xD0\xA3\xD0\xA1\xD0\x9F\xD0\x95\xD0\xA5") : TR("PARTIAL", "\xD0\xA7\xD0\x90\xD0\xA1\xD0\xA2\xD0\x98\xD0\xA7\xD0\x9D\xD0\x9E")) + "\n");
+                                ? ApplyPatchesX64(sess.hProc, sess.baseAddr, txtBuf, textRva, iat, targetFps, rep2, proof, &sess, rdata, &LoadOrFetchSignedSigManifest)
+                                : ApplyPatchesX86(sess.hProc, sess.baseAddr, txtBuf, textRva, iat, targetFps, rep2, proof, &sess, rdata, &LoadOrFetchSignedSigManifest);
+                            ConPrint(TR("  [OK] Live Reapply: ", "  [OK] \xD0\x9F\xD0\xBE\xD0\xB2\xD1\x82\xD0\xBE\xD1\x80\xD0\xBD\xD0\xBE\xD0\xB5 \xD0\xBF\xD1\x80\xD0\xB8\xD0\xBC\xD0\xB5\xD0\xBD\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5: ") +
+                                     ((reok && rep2.failCount == 0)
+                                         ? TR("SUCCESS", "\xD0\xA3\xD0\xA1\xD0\x9F\xD0\x95\xD0\xA5")
+                                         : (rep2.okCount > 0 ? TR("PARTIAL", "\xD0\xA7\xD0\x90\xD0\xA1\xD0\xA2\xD0\x98\xD0\xA7\xD0\x9D\xD0\x9E")
+                                                             : TR("FAILED", "\xD0\x9E\xD0\xA8\xD0\x98\xD0\x91\xD0\x9A\xD0\x90"))) + "\n");
+                            if (!reok || rep2.failCount > 0 || !rep2.newerVersionAvailable.empty()) {
+                                SetColor(FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+                                ConPrint(TR("  -> Check for updates : https://cr1m.net/test-drive\n",
+                                            "  -> \xD0\x9F\xD1\x80\xD0\xBE\xD0\xB2\xD0\xB5\xD1\x80\xD0\xB8\xD1\x82\xD1\x8C \xD0\xBE\xD0\xB1\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xB8\xD1\x8F : https://cr1m.net/test-drive\n"));
+                            }
                         }
                     }
                     SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);

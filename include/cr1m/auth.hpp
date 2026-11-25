@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "cr1m/aob.hpp"
 #include "cr1m/auth_proof.hpp"
 #include "cr1m/build_config.hpp"
 #include "cr1m/hwid.hpp"
@@ -45,9 +46,15 @@ bool HttpsPostJson(const std::wstring& host, const std::wstring& path,
                    const std::string& jsonBody, DWORD connectMs, DWORD rwMs,
                    DWORD& outHttpCode, std::string& outRespBody);
 
+bool HttpsGetText(const std::wstring& host, const std::wstring& path,
+                  DWORD connectMs, DWORD rwMs,
+                  DWORD& outHttpCode, std::string& outRespBody);
+
 bool VerifyRsaSha256WithEmbeddedPub(const std::string& payload,
                                     const std::string& sigHex,
                                     uint64_t* outPubHash);
+
+bool LoadOrFetchSignedSigManifest(bool is64, bool allowNetwork, SignedSigManifest& outManifest);
 
 std::optional<AuthProof> VerifySignedReceipt(const HwidBundle& hb,
                                              const std::string& receiptText,
