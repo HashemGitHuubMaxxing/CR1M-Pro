@@ -50,11 +50,20 @@ bool HttpsGetText(const std::wstring& host, const std::wstring& path,
                   DWORD connectMs, DWORD rwMs,
                   DWORD& outHttpCode, std::string& outRespBody);
 
+bool HttpsGetBytes(const std::wstring& host, const std::wstring& path,
+                   DWORD connectMs, DWORD rwMs, size_t maxBytes,
+                   DWORD& outHttpCode, std::vector<uint8_t>& outBody);
+
 bool VerifyRsaSha256WithEmbeddedPub(const std::string& payload,
                                     const std::string& sigHex,
                                     uint64_t* outPubHash);
 
 bool LoadOrFetchSignedSigManifest(bool is64, bool allowNetwork, SignedSigManifest& outManifest);
+
+void CleanupPreviousOtaBackup();
+void StartAsyncOtaUpdateCheck();
+bool TryConsumeVerifiedOtaUpdate(SignedReleaseManifest& outManifest, DWORD maxWaitMs = 0);
+bool PerformVerifiedOtaUpdate(const SignedReleaseManifest& rel);
 
 std::optional<AuthProof> VerifySignedReceipt(const HwidBundle& hb,
                                              const std::string& receiptText,

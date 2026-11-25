@@ -86,7 +86,11 @@ bool ApplyPatchesX64(HANDLE hp, uintptr_t base, const std::vector<uint8_t>& txt,
     }
 
     uint32_t rLoopB = ScanAob(txt.data(), txt.size(), txtRva,
-        "B8 E8 03 00 00 99 F7 FE 8B D8 2B D9 83 FB 01 41 0F 4C DC E8 ?? ?? ?? ?? 84 C0 74 ?? 8B CB FF|E8", 30);
+        "B8 E8 03 00 00 99 F7 ?? 8B D8 2B D9 83 FB 01 41 0F 4C ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 8B CB FF|E8", 30);
+    if (!rLoopB) {
+        rLoopB = ScanAob(txt.data(), txt.size(), txtRva,
+            "B8 E8 03 00 00 99 41 F7 ?? 8B D8 2B D9 83 FB 01 41 0F 4C ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 8B CB FF|E8", 31);
+    }
     if (!rLoopB) {
         rLoopB = ResolveLoopBByIat(txt.data(), txt.size(), txtRva, base, true, iat.pSleepRva, hp, caveMagic);
     }

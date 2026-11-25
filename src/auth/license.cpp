@@ -7,7 +7,9 @@
 #include "cr1m/i18n.hpp"
 #include "cr1m/trial.hpp"
 #include "cr1m/util.hpp"
+#include <shellapi.h>
 #include <winhttp.h>
+#include <atomic>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
@@ -379,6 +381,270 @@ bool HttpsGetText(const std::wstring& host, const std::wstring& path,
     }
     WinHttpCloseHandle(hSess);
     return ok;
+}
+
+bool HttpsGetBytes(const std::wstring& host, const std::wstring& path,
+                   DWORD connectMs, DWORD rwMs, size_t maxBytes,
+                   DWORD& outHttpCode, std::vector<uint8_t>& outBody) {
+    outHttpCode = 0;
+    outBody.clear();
+
+    HINTERNET hSess = WinHttpOpen(L"CR1M-Pro-Mod/2.4", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                  WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!hSess) {
+        hSess = WinHttpOpen(L"CR1M-Pro-Mod/2.4", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                            WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    }
+    if (!hSess) {
+        hSess = WinHttpOpen(L"CR1M-Pro-Mod/2.4", WINHTTP_ACCESS_TYPE_NO_PROXY,
+                            WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    }
+    if (!hSess) return false;
+
+    WinHttpSetTimeouts(hSess, static_cast<int>(connectMs), static_cast<int>(connectMs),
+                       static_cast<int>(rwMs), static_cast<int>(rwMs));
+
+    bool ok = false;
+    HINTERNET hConn = WinHttpConnect(hSess, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (hConn) {
+        HINTERNET hReq = WinHttpOpenRequest(hConn, L"GET", path.c_str(), NULL, WINHTTP_NO_REFERER,
+                                            WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+        if (hReq) {
+            DWORD redirPolicy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+            WinHttpSetOption(hReq, WINHTTP_OPTION_REDIRECT_POLICY, &redirPolicy, sizeof(redirPolicy));
+            BOOL sent = WinHttpSendRequest(hReq, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                           WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+            if (sent && WinHttpReceiveResponse(hReq, NULL)) {
+                DWORD code = 0, codeLen = sizeof(code);
+                if (WinHttpQueryHeaders(hReq, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                                        NULL, &code, &codeLen, NULL)) {
+                    outHttpCode = code;
+                    bool readOk = true;
+                    while (true) {
+                        DWORD avail = 0;
+                        if (!WinHttpQueryDataAvailable(hReq, &avail)) { readOk = false; break; }
+                        if (avail == 0) break;
+                        if (outBody.size() + avail > maxBytes) { readOk = false; break; }
+                        size_t prev = outBody.size();
+                        outBody.resize(prev + avail);
+                        DWORD got = 0;
+                        if (!WinHttpReadData(hReq, outBody.data() + prev, avail, &got)) {
+                            readOk = false;
+                            break;
+                        }
+                        outBody.resize(prev + got);
+                        if (got == 0) break;
+                    }
+                    ok = readOk;
+                    if (!readOk) {
+                        outBody.clear();
+                        outHttpCode = 0;
+                    }
+                }
+            }
+            WinHttpCloseHandle(hReq);
+        }
+        WinHttpCloseHandle(hConn);
+    }
+    WinHttpCloseHandle(hSess);
+    return ok;
+}
+
+namespace {
+
+struct AsyncOtaState {
+    HANDLE hThread = NULL;
+    HANDLE hDoneEvent = NULL;
+    std::atomic<bool> started{ false };
+    DWORD httpCode = 0;
+    std::string rawResp;
+    bool consumed = false;
+    bool hasVerified = false;
+    SignedReleaseManifest verified{};
+};
+
+AsyncOtaState gOtaState;
+
+DWORD WINAPI AsyncOtaWorkerProc(LPVOID) {
+    DWORD code = 0;
+    std::string resp;
+    if (HttpsGetText(CR1M_API_HOST_W, L"/api/client/release", 800, 1200, code, resp)) {
+        gOtaState.httpCode = code;
+        gOtaState.rawResp = std::move(resp);
+    }
+    if (gOtaState.hDoneEvent) {
+        SetEvent(gOtaState.hDoneEvent);
+    }
+    return 0;
+}
+
+std::wstring GetCurrentExePathW() {
+    wchar_t buf[MAX_PATH * 2]{};
+    DWORD n = GetModuleFileNameW(NULL, buf, static_cast<DWORD>(_countof(buf)));
+    if (n == 0 || n >= _countof(buf)) return L"";
+    return std::wstring(buf, n);
+}
+
+bool WriteBytesAtomicFileW(const std::wstring& path, const std::vector<uint8_t>& data) {
+    HANDLE hf = CreateFileW(path.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hf == INVALID_HANDLE_VALUE) return false;
+    size_t writtenTotal = 0;
+    bool ok = true;
+    while (writtenTotal < data.size()) {
+        DWORD chunk = static_cast<DWORD>(std::min<size_t>(data.size() - writtenTotal, 65536u));
+        DWORD bw = 0;
+        if (!WriteFile(hf, data.data() + writtenTotal, chunk, &bw, NULL) || bw != chunk) {
+            ok = false;
+            break;
+        }
+        writtenTotal += bw;
+    }
+    if (ok) FlushFileBuffers(hf);
+    CloseHandle(hf);
+    if (!ok) DeleteFileW(path.c_str());
+    return ok;
+}
+
+} // namespace
+
+void CleanupPreviousOtaBackup() {
+    std::wstring curExe = GetCurrentExePathW();
+    if (curExe.empty()) return;
+    std::wstring oldExe = curExe + L".old";
+    if (!DeleteFileW(oldExe.c_str()) && GetLastError() == ERROR_SHARING_VIOLATION) {
+        Sleep(80);
+        DeleteFileW(oldExe.c_str());
+    }
+}
+
+void StartAsyncOtaUpdateCheck() {
+    bool expected = false;
+    if (!gOtaState.started.compare_exchange_strong(expected, true)) return;
+    gOtaState.hDoneEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!gOtaState.hDoneEvent) return;
+    gOtaState.hThread = CreateThread(NULL, 0, AsyncOtaWorkerProc, NULL, 0, NULL);
+    if (!gOtaState.hThread) {
+        SetEvent(gOtaState.hDoneEvent);
+    }
+}
+
+bool TryConsumeVerifiedOtaUpdate(SignedReleaseManifest& outManifest, DWORD maxWaitMs) {
+    outManifest = SignedReleaseManifest{};
+    if (!gOtaState.started.load() || !gOtaState.hDoneEvent) return false;
+    if (gOtaState.consumed) {
+        if (gOtaState.hasVerified) {
+            outManifest = gOtaState.verified;
+            return true;
+        }
+        return false;
+    }
+    if (WaitForSingleObject(gOtaState.hDoneEvent, maxWaitMs) != WAIT_OBJECT_0) {
+        return false;
+    }
+    if (gOtaState.hThread) {
+        WaitForSingleObject(gOtaState.hThread, 100);
+        CloseHandle(gOtaState.hThread);
+        gOtaState.hThread = NULL;
+    }
+    gOtaState.consumed = true;
+    if (gOtaState.httpCode == 200 && !gOtaState.rawResp.empty()) {
+        bool apiOk = false;
+        std::string proto, sigAlg, payload, sigHex;
+        SignedReleaseManifest parsed{};
+        if (JsonExtractBoolField(gOtaState.rawResp, "ok", apiOk) && apiOk &&
+            JsonExtractStringField(gOtaState.rawResp, "protocol", proto) && proto == "CR1M-REL-V1" &&
+            JsonExtractStringField(gOtaState.rawResp, "signatureAlg", sigAlg) && sigAlg == "rsa-sha256" &&
+            JsonExtractStringField(gOtaState.rawResp, "payload", payload) &&
+            JsonExtractStringField(gOtaState.rawResp, "signature", sigHex) &&
+            VerifyRsaSha256WithEmbeddedPub(payload, sigHex, nullptr) &&
+            ParseSignedReleaseManifestPayload(payload, parsed) &&
+            CompareSemver(parsed.version, kModVersion) > 0) {
+            parsed.sigHex = sigHex;
+            gOtaState.verified = parsed;
+            gOtaState.hasVerified = true;
+            outManifest = parsed;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool PerformVerifiedOtaUpdate(const SignedReleaseManifest& rel) {
+    if (rel.version.empty() || rel.sha256.size() != 64 || rel.size < 100000ULL || rel.url.empty()) {
+        return false;
+    }
+    std::wstring curExe = GetCurrentExePathW();
+    if (curExe.empty()) return false;
+
+    SetColor(FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+    ConPrint(TR("\n  [+] Downloading verified CR1M Pro Mod v", "\n  [+] \xD0\x97\xD0\xB0\xD0\xB3\xD1\x80\xD1\x83\xD0\xB7\xD0\xBA\xD0\xB0 CR1M Pro Mod v") +
+             rel.version + TR(" from cr1m.net...\n", " \xD1\x81 cr1m.net...\n"));
+    SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+
+    DWORD httpCode = 0;
+    std::vector<uint8_t> bin;
+    bool got = HttpsGetBytes(CR1M_API_HOST_W, Utf8ToWide(rel.url), 3000, 12000,
+                             static_cast<size_t>(rel.size) + 4096u, httpCode, bin);
+    if (!got || httpCode != 200 || bin.size() != static_cast<size_t>(rel.size)) {
+        SetColor(FOREGROUND_RED | FOREGROUND_INTENSITY);
+        ConPrint(TR("  [X] OTA download failed. Please download manually at https://cr1m.net/test-drive\n",
+                    "  [X] \xD0\x9E\xD1\x88\xD0\xB8\xD0\xB1\xD0\xBA\xD0\xB0 \xD0\xB7\xD0\xB0\xD0\xB3\xD1\x80\xD1\x83\xD0\xB7\xD0\xBA\xD0\xB8. \xD0\xA1\xD0\xBA\xD0\xB0\xD1\x87\xD0\xB0\xD0\xB9\xD1\x82\xD0\xB5 \xD0\xB2\xD1\x80\xD1\x83\xD1\x87\xD0\xBD\xD1\x83\xD1\x8E: https://cr1m.net/test-drive\n"));
+        SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+        return false;
+    }
+
+    // Validate PE64 header and verify SHA 256 digest against the RSA signed manifest
+    if (bin.size() < 0x200 || bin[0] != 'M' || bin[1] != 'Z') return false;
+    uint32_t peOff = 0;
+    memcpy(&peOff, bin.data() + 0x3C, 4);
+    if (peOff + 26u > bin.size()) return false;
+    uint32_t peSig = 0;
+    uint16_t optMagic = 0;
+    memcpy(&peSig, bin.data() + peOff, 4);
+    memcpy(&optMagic, bin.data() + peOff + 24u, 2);
+    if (peSig != 0x00004550u || optMagic != 0x020Bu) return false;
+
+    BYTE digest[32]{};
+    if (!ComputeSha256Bytes(bin.data(), bin.size(), digest)) return false;
+    std::string actualHex = BytesToLowerHex(digest, sizeof(digest));
+    SecureZeroMemory(digest, sizeof(digest));
+    if (!CtEqualStr(actualHex, rel.sha256)) {
+        SetColor(FOREGROUND_RED | FOREGROUND_INTENSITY);
+        ConPrint(TR("  [X] SHA 256 verification failed; update aborted safely.\n",
+                    "  [X] \xD0\x9E\xD1\x88\xD0\xB8\xD0\xB1\xD0\xBA\xD0\xB0 \xD0\xBF\xD1\x80\xD0\xBE\xD0\xB2\xD0\xB5\xD1\x80\xD0\xBA\xD0\xB8 SHA 256; \xD0\xBE\xD0\xB1\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5 \xD0\xBE\xD1\x82\xD0\xBC\xD0\xB5\xD0\xBD\xD0\xB5\xD0\xBD\xD0\xBE.\n"));
+        SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+        return false;
+    }
+
+    std::wstring newExe = curExe + L".new";
+    std::wstring oldExe = curExe + L".old";
+    if (!WriteBytesAtomicFileW(newExe, bin)) {
+        SetColor(FOREGROUND_RED | FOREGROUND_INTENSITY);
+        ConPrint(TR("  [X] Cannot write update in this folder. Download manually at https://cr1m.net/test-drive\n",
+                    "  [X] \xD0\x9D\xD0\xB5\xD1\x82 \xD0\xBF\xD1\x80\xD0\xB0\xD0\xB2 \xD0\xB7\xD0\xB0\xD0\xBF\xD0\xB8\xD1\x81\xD0\xB8 \xD0\xB2 \xD1\x8D\xD1\x82\xD1\x83 \xD0\xBF\xD0\xB0\xD0\xBF\xD0\xBA\xD1\x83. \xD0\xA1\xD0\xBA\xD0\xB0\xD1\x87\xD0\xB0\xD0\xB9\xD1\x82\xD0\xB5: https://cr1m.net/test-drive\n"));
+        SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+        return false;
+    }
+
+    DeleteFileW(oldExe.c_str());
+    if (!MoveFileExW(curExe.c_str(), oldExe.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        DeleteFileW(newExe.c_str());
+        return false;
+    }
+    if (!MoveFileExW(newExe.c_str(), curExe.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        MoveFileExW(oldExe.c_str(), curExe.c_str(), MOVEFILE_REPLACE_EXISTING);
+        DeleteFileW(newExe.c_str());
+        return false;
+    }
+
+    SetColor(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+    ConPrint(TR("  [OK] Updated cleanly to CR1M Pro Mod v", "  [OK] \xD0\x9E\xD0\xB1\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xBE \xD0\xB4\xD0\xBE CR1M Pro Mod v") +
+             rel.version + TR("! Launching new version...\n", "! \xD0\x97\xD0\xB0\xD0\xBF\xD1\x83\xD1\x81\xD0\xBA \xD0\xBD\xD0\xBE\xD0\xB2\xD0\xBE\xD0\xB9 \xD0\xB2\xD0\xB5\xD1\x80\xD1\x81\xD0\xB8\xD0\xB8...\n"));
+    SetColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+
+    std::wstring curDir = curExe.substr(0, curExe.find_last_of(L"\\/"));
+    ShellExecuteW(NULL, L"open", curExe.c_str(), NULL, curDir.c_str(), SW_SHOWNORMAL);
+    return true;
 }
 
 bool LoadOrFetchSignedSigManifest(bool is64, bool allowNetwork, SignedSigManifest& outManifest) {

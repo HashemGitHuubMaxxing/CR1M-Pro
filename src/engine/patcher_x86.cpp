@@ -27,7 +27,7 @@ bool FixSnapAbsX86(HANDLE hp, uintptr_t base, uint32_t movssRva, const RdataSlic
     if (!movssRva) { ++rep.failCount; return false; }
     uint8_t insn[8]{};
     if (!ReadMem(hp, base + movssRva, insn, 8) ||
-        insn[0] != 0xF3 || insn[1] != 0x0F || insn[2] != 0x10 || insn[3] != 0x35) {
+        insn[0] != 0xF3 || insn[1] != 0x0F || insn[2] != 0x10 || (insn[3] & 0xC7u) != 0x05u) {
         ++rep.failCount;
         return false;
     }
@@ -235,15 +235,32 @@ bool ApplyPatchesX86(HANDLE hp, uintptr_t base, const std::vector<uint8_t>& txt,
     uint32_t rWin10 = ScanAob(txt.data(), txt.size(), txtRva,
         "55|B0 8B|01 EC|C3 81 EC ?? ?? 00 00 A1 ?? ?? ?? ?? 33 C5 89 45 FC 56 68 00 01 00 00 8D 85 ?? ?? FF FF C7 85 ?? ?? FF FF 1C 01 00 00", 0);
 
+    uint32_t updRoundfLen = 48;
     uint32_t rUpdRoundf = ScanAob(txt.data(), txt.size(), txtRva,
-        "F3 0F 10 45 08 ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? F3 0F 10 2D ?? ?? ?? ?? 0F 57 DB F3 0F 59", 5);
+        "F3 0F 10 45 08 ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? F3 0F 10 2D ?? ?? ?? ?? 0F 57 ?? F3 0F 59", 5);
+    if (!rUpdRoundf) {
+        rUpdRoundf = ScanAob(txt.data(), txt.size(), txtRva,
+            "F3 0F 10 45 08 ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? F3 0F 10 2D ?? ?? ?? ?? 0F 57 ?? F3 0F 59", 5);
+        if (rUpdRoundf) updRoundfLen = 54;
+    }
     uint32_t rUpdSnap1 = ScanAob(txt.data(), txt.size(), txtRva,
-        "0F 28 D1 73 03 0F 57 D7 F3 0F 10 35 ?? ?? ?? ?? 0F 2F F2 72 ?? 0F 28 C4 EB ?? F3 0F 59 CD F3 0F 58 C1 EB ?? F3 0F 10 35 ?? ?? ?? ?? F3 0F 10 0D", 8);
+        "0F 28 ?? 73 03 0F 57 ?? F3 0F 10 35 ?? ?? ?? ?? 0F 2F ?? 72 ?? 0F 28 C4 EB ?? F3 0F 59 CD F3 0F 58 C1 EB ?? F3 0F 10 35 ?? ?? ?? ?? F3 0F 10 0D", 8);
     uint32_t rUpdSnap2 = rUpdSnap1 ? ResolveX86UpdSnap2(txt.data(), txt.size(), txtRva, rUpdSnap1) : 0;
     uint32_t rUpdSnap3 = ScanAob(txt.data(), txt.size(), txtRva,
-        "F3 0F 11 44 24 ?? EB 08 F3 0F 10 35 ?? ?? ?? ?? F3 0F 10 54 24 ?? F3 0F 10 64 24 ?? 0F 2E D4", 8);
+        "F3 0F 11 44 24 ?? EB 08 F3 0F 10 35 ?? ?? ?? ?? F3 0F 10 ?? 24 ?? F3 0F 10 64 24 ?? 0F 2E ??", 8);
     uint32_t rUpdRotSnap = ScanAob(txt.data(), txt.size(), txtRva,
         "F3 0F 10 1F F3 0F 10 2D ?? ?? ?? ?? F3 0F 10 35 ?? ?? ?? ?? 0F 2E CB 9F F6 C4 44 0F 8B", 12);
+    uint32_t rUpdRotSnap2 = 0;
+    if (!rUpdRotSnap) {
+        auto rotHits = ScanAobAll(txt.data(), txt.size(), txtRva,
+            "0F 28 C8 F3 0F 5C CB 0F 2F CA 0F 28 D1 73 07 0F 57 15 ?? ?? ?? ?? F3 0F 10 ?? ?? ?? ?? ?? 0F 2F ?? 73 0C 0F 28 C1 F3 0F 59 45 ?? F3 0F 58 C3");
+        if (rotHits.size() == 2 && rotHits[1] > rotHits[0] && (rotHits[1] - rotHits[0]) < 0x300u) {
+            rUpdRotSnap = rotHits[0] + 22u;
+            rUpdRotSnap2 = rotHits[1] + 22u;
+        } else if (rotHits.size() == 1) {
+            rUpdRotSnap = rotHits[0] + 22u;
+        }
+    }
     uint32_t rRotBr = ScanAob(txt.data(), txt.size(), txtRva,
         "89 44 24 ?? 89 4C 24 ?? 75|74 ?? 80 BE ?? ?? 00 00 00 74 ?? F3 0F 10 5C 24 ?? F3 0F 10 54 24 ?? EB", 8);
     uint32_t rRotAcc = ScanAob(txt.data(), txt.size(), txtRva,
@@ -398,10 +415,33 @@ bool ApplyPatchesX86(HANDLE hp, uintptr_t base, const std::vector<uint8_t>& txt,
     }
 
     if (rUpdRoundf) {
-        uint8_t r48[48];
-        memset(r48, 0x90, sizeof(r48));
-        r48[0] = 0xEB; r48[1] = 0x2E;
-        rfOk = ApplyPatchLogged(hp, base, rUpdRoundf, r48, sizeof(r48), report, sess);
+        if (updRoundfLen == 54) {
+            uint8_t cur[15]{};
+            if (ReadMem(hp, base + rUpdRoundf, cur, sizeof(cur))) {
+                if (cur[0] == 0xF3 && cur[1] == 0x0F && cur[2] == 0x11 && cur[3] == 0x4C && cur[4] == 0x24 &&
+                    cur[6] == 0xEB && cur[7] == 0x2E) {
+                    ++report.okCount;
+                    rfOk = true;
+                } else if (cur[8] == 0x51 && cur[9] == 0xF3 && cur[10] == 0x0F && cur[11] == 0x11 &&
+                           cur[12] == 0x4C && cur[13] == 0x24 && cur[14] >= 4u) {
+                    uint8_t r54[54];
+                    memset(r54, 0x90, sizeof(r54));
+                    r54[0] = 0xF3; r54[1] = 0x0F; r54[2] = 0x11; r54[3] = 0x4C; r54[4] = 0x24;
+                    r54[5] = static_cast<uint8_t>(cur[14] - 4u);
+                    r54[6] = 0xEB; r54[7] = 0x2E;
+                    rfOk = ApplyPatchLogged(hp, base, rUpdRoundf, r54, sizeof(r54), report, sess);
+                } else {
+                    ++report.failCount;
+                }
+            } else {
+                ++report.failCount;
+            }
+        } else {
+            uint8_t r48[48];
+            memset(r48, 0x90, sizeof(r48));
+            r48[0] = 0xEB; r48[1] = 0x2E;
+            rfOk = ApplyPatchLogged(hp, base, rUpdRoundf, r48, sizeof(r48), report, sess);
+        }
     } else {
         ++report.failCount;
     }
@@ -410,6 +450,9 @@ bool ApplyPatchesX86(HANDLE hp, uintptr_t base, const std::vector<uint8_t>& txt,
     bool sn2Ok = FixSnapAbsX86(hp, base, rUpdSnap2, rdata, report, sess);
     bool sn3Ok = FixSnapAbsX86(hp, base, rUpdSnap3, rdata, report, sess);
     bool sn4Ok = FixSnapAbsX86(hp, base, rUpdRotSnap, rdata, report, sess);
+    if (rUpdRotSnap2) {
+        sn4Ok = sn4Ok && FixSnapAbsX86(hp, base, rUpdRotSnap2, rdata, report, sess);
+    }
     report.aimOk = rbOk && raOk && rfOk && sn1Ok && sn2Ok && sn3Ok && sn4Ok;
 
     // 5. Silhouette Spotting Hitch & Precache Camouflage Fixes

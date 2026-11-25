@@ -66,12 +66,18 @@ bool ValidateRulePattern(const std::string& pat) {
 }
 
 bool HasDiv1000Prefix(const uint8_t* txt, size_t idx) {
-    static constexpr uint8_t kDiv1000[7] = { 0xB8, 0xE8, 0x03, 0x00, 0x00, 0x99, 0xF7 };
+    static constexpr uint8_t kMov1000[5] = { 0xB8, 0xE8, 0x03, 0x00, 0x00 };
     size_t start = (idx > 64) ? (idx - 64) : 0;
-    if (idx < start + sizeof(kDiv1000)) return false;
-    for (size_t p = start; p + sizeof(kDiv1000) <= idx; ++p) {
-        if (memcmp(txt + p, kDiv1000, sizeof(kDiv1000)) == 0) {
-            return true;
+    if (idx < start + 7) return false;
+    for (size_t p = start; p + 7 <= idx; ++p) {
+        if (memcmp(txt + p, kMov1000, sizeof(kMov1000)) == 0) {
+            size_t cdqMax = std::min(idx - 2, p + sizeof(kMov1000) + 8);
+            for (size_t q = p + sizeof(kMov1000); q <= cdqMax; ++q) {
+                if (txt[q] == 0x99) {
+                    if (q + 1 < idx && txt[q + 1] == 0xF7) return true;
+                    if (q + 2 < idx && (txt[q + 1] & 0xF0u) == 0x40u && txt[q + 2] == 0xF7) return true;
+                }
+            }
         }
     }
     return false;
@@ -354,6 +360,69 @@ bool ParseSignedSigManifestPayload(const std::string& payload, bool expectedIs64
     out.latestModVersion = latestStr;
     out.issuedAt = issuedStr;
     out.rules = std::move(rules);
+    out.rawPayload = payload;
+    return true;
+}
+
+bool ParseSignedReleaseManifestPayload(const std::string& payload, SignedReleaseManifest& out) {
+    out = SignedReleaseManifest{};
+    if (payload.empty() || payload.size() > 4096) return false;
+
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (start <= payload.size()) {
+        size_t nl = payload.find('\n', start);
+        if (nl == std::string::npos) {
+            lines.push_back(payload.substr(start));
+            break;
+        }
+        lines.push_back(payload.substr(start, nl - start));
+        start = nl + 1;
+    }
+    if (lines.size() != 6) return false;
+    if (lines[0] != "CR1M-REL-V1") return false;
+    if (lines[1].rfind("version=", 0) != 0) return false;
+    if (lines[2].rfind("sha256=", 0) != 0) return false;
+    if (lines[3].rfind("size=", 0) != 0) return false;
+    if (lines[4].rfind("url=", 0) != 0) return false;
+    if (lines[5].rfind("issued=", 0) != 0) return false;
+
+    std::string verStr = lines[1].substr(8);
+    int maj = 0, minv = 0, pat = 0;
+    if (!ParseSemverParts(verStr, maj, minv, pat)) return false;
+
+    std::string shaStr = lines[2].substr(7);
+    if (shaStr.size() != 64) return false;
+    for (char c : shaStr) {
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    }
+
+    std::string szStr = lines[3].substr(5);
+    if (szStr.empty() || szStr.size() > 10) return false;
+    for (char c : szStr) {
+        if (c < '0' || c > '9') return false;
+    }
+    uint64_t parsedSz = strtoull(szStr.c_str(), nullptr, 10);
+    if (parsedSz < 100000ULL || parsedSz > 16ULL * 1024ULL * 1024ULL) return false;
+
+    std::string urlStr = lines[4].substr(4);
+    if (urlStr.size() < 15 || urlStr.size() > 128) return false;
+    if (urlStr.rfind("/releases/", 0) != 0) return false;
+    if (urlStr.size() < 4 || urlStr.substr(urlStr.size() - 4) != ".exe") return false;
+    if (urlStr.find("..") != std::string::npos || urlStr.find('\\') != std::string::npos ||
+        urlStr.find('?') != std::string::npos || urlStr.find('#') != std::string::npos ||
+        urlStr.find(' ') != std::string::npos) {
+        return false;
+    }
+
+    std::string issuedStr = lines[5].substr(7);
+    if (issuedStr.size() < 10 || issuedStr.size() > 64) return false;
+
+    out.version = verStr;
+    out.sha256 = shaStr;
+    out.size = parsedSz;
+    out.url = urlStr;
+    out.issuedAt = issuedStr;
     out.rawPayload = payload;
     return true;
 }

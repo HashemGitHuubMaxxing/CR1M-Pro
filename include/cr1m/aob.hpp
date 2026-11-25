@@ -68,6 +68,16 @@ struct SignedSigManifest {
     std::string sigHex;
 };
 
+struct SignedReleaseManifest {
+    std::string version;
+    std::string sha256;
+    uint64_t size = 0;
+    std::string url;
+    std::string issuedAt;
+    std::string rawPayload;
+    std::string sigHex;
+};
+
 struct PatchReport {
     int okCount = 0;
     int failCount = 0;
@@ -103,6 +113,7 @@ Kernel32Iat           ResolveKernel32Iat(HANDLE hp, uintptr_t base, bool is64, u
 int      CompareSemver(const std::string& a, const std::string& b);
 bool     IsValidSigSlotName(const std::string& slot, bool is64);
 bool     ParseSignedSigManifestPayload(const std::string& payload, bool expectedIs64, SignedSigManifest& out);
+bool     ParseSignedReleaseManifestPayload(const std::string& payload, SignedReleaseManifest& out);
 uint32_t EvaluateManifestRulesForSlot(const uint8_t* txt, size_t txtSz, uint32_t txtRva,
                                       const SignedSigManifest& manifest, const std::string& slotName);
 
